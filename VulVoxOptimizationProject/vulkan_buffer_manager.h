@@ -1,5 +1,12 @@
 #pragma once
 
+#include "vulkan_buffer.h"
+#include "vulkan_instance.h"
+
+#include <vector>
+#include <cassert>
+#include <cstring>
+
 namespace vulvox
 {
     class Vulkan_Buffer_Manager
@@ -8,7 +15,10 @@ namespace vulvox
 
         Vulkan_Buffer_Manager() = default;
 
-        void init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor = 10);
+        // Initialize buffer manager.
+        // default_buffers_per_frame: how many instance sub-buffers to preallocate per-frame (helps avoid runtime VMA allocations)
+        // default_max_instances: maximum number of instances expected per instance-buffer (preallocates buffer size = sizeof(mat4) * default_max_instances)
+        void init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor = 10, const uint32_t default_buffers_per_frame = 16, const uint32_t default_max_instances = 65536);
         void destroy();
 
         /// <summary>
@@ -19,7 +29,8 @@ namespace vulvox
         /// <summary>
         /// Call this at the start of every frame to reset the instance buffer usage counter.
         /// </summary>
-        void begin_frame();
+        // Reset per-frame allocation cursor. Must be called each frame with the current_frame index.
+        void begin_frame(const uint32_t current_frame);
 
         /// <summary>
         /// Retrieve the uniform buffer for the current swap chain image.
@@ -36,15 +47,50 @@ namespace vulvox
         Buffer& get_instance_buffer(const size_t buffer_index);
 
         /// <summary>
-        /// Copy data to a instance buffer and returns the index of the buffer.
+        /// Reference to allocated region in an instance buffer.
+        /// buffer_index: index into instance_buffers
+        /// offset: byte offset within the buffer where data was copied
+        /// </summary>
+        struct InstanceBufferRef
+        {
+            size_t buffer_index;
+            VkDeviceSize offset;
+        };
+
+        /// <summary>
+        /// Copy data to a per-frame instance buffer and returns the buffer index + byte offset.
+        /// This avoids creating new buffers at runtime by using large preallocated, persistently-mapped per-frame buffers.
         /// </summary>
         template<typename T>
-        size_t copy_to_instance_buffer(Vulkan_Instance& instance, const uint32_t current_frame, const std::vector<T>& data)
+        InstanceBufferRef copy_to_instance_buffer(Vulkan_Instance& instance, const uint32_t current_frame, const std::vector<T>& data)
         {
-            size_t buffer_index = get_instance_buffer(current_frame, sizeof(T), data.size());
-            instance_buffers[buffer_index].copy_to_buffer(*vulkan_instance, data);
+            // Ensure current_frame is valid
+            assert(current_frame < instance_buffers.size());
 
-            return buffer_index;
+            VkDeviceSize data_size = static_cast<VkDeviceSize>(data.size()) * sizeof(T);
+
+            // Align to 16 bytes to satisfy std140-like alignment needs
+            const VkDeviceSize alignment = 16;
+            VkDeviceSize aligned_offset = (instance_buffer_offsets[current_frame] + (alignment - 1)) & ~(alignment - 1);
+
+            // If the data doesn't fit, grow the buffer (using growth_factor)
+            VkDeviceSize required_size = aligned_offset + data_size;
+            if (required_size > instance_buffers[current_frame].size)
+            {
+                VkDeviceSize new_size = required_size + sizeof(T) * static_cast<VkDeviceSize>(growth_factor);
+                instance_buffers[current_frame].recreate(*vulkan_instance, new_size);
+            }
+
+            // Copy into mapped memory
+            if (instance_buffers[current_frame].allocation_info.pMappedData != nullptr)
+            {
+                std::memcpy(static_cast<char*>(instance_buffers[current_frame].allocation_info.pMappedData) + aligned_offset, data.data(), data_size);
+            }
+
+            // Update cursor
+            instance_buffer_offsets[current_frame] = aligned_offset + data_size;
+
+            return InstanceBufferRef{ current_frame, aligned_offset };
         }
 
     private:
@@ -65,14 +111,20 @@ namespace vulvox
         Vulkan_Instance* vulkan_instance = nullptr;
 
         uint32_t swap_chain_image_count = 0;
-        uint32_t instance_buffer_requests = 0;
+        uint32_t instance_buffer_requests = 0; // retained for compatibility
         uint32_t growth_factor = 10;
 
         //Uniform buffers, data available across shaders
         std::vector<Buffer> uniform_buffers;
 
-        //Instance buffers, stores data that is part of specific draw calls
+        //Instance buffers, one per swap-chain image (persistently mapped big buffers)
         std::vector<Buffer> instance_buffers;
+
+        // Per-frame byte cursor into the instance buffer
+        std::vector<VkDeviceSize> instance_buffer_offsets;
+
+        // Configured default max instances per per-frame buffer (used at init)
+        uint32_t default_max_instances = 0;
     };
 
 }

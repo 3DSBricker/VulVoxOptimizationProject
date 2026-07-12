@@ -79,15 +79,36 @@ namespace vulvox
     {
         vkEndCommandBuffer(command_buffer);
 
-        //Execute copy command buffer instantly and wait until transfer is complete
+        // Execute copy command buffer using a fence instead of waiting for the whole queue to become idle.
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &command_buffer;
 
-        vkQueueSubmit(vulkan_instance->graphics_queue, 1, &submitInfo, nullptr);
-        vkQueueWaitIdle(vulkan_instance->graphics_queue);
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = 0;
 
+        VkFence fence;
+        if (vkCreateFence(vulkan_instance->device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create fence for single-time commands");
+        }
+
+        if (vkQueueSubmit(vulkan_instance->graphics_queue, 1, &submitInfo, fence) != VK_SUCCESS)
+        {
+            vkDestroyFence(vulkan_instance->device, fence, nullptr);
+            throw std::runtime_error("Failed to submit single-time command buffer!");
+        }
+
+        // Wait for the submitted fence to finish
+        if (vkWaitForFences(vulkan_instance->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        {
+            vkDestroyFence(vulkan_instance->device, fence, nullptr);
+            throw std::runtime_error("Failed to wait for fence for single-time commands");
+        }
+
+        vkDestroyFence(vulkan_instance->device, fence, nullptr);
         vkFreeCommandBuffers(vulkan_instance->device, command_pool, 1, &command_buffer);
     }
 

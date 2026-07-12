@@ -3,13 +3,24 @@
 
 namespace vulvox
 {
-    void Vulkan_Buffer_Manager::init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor)
+    void Vulkan_Buffer_Manager::init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor, const uint32_t default_buffers_per_frame, const uint32_t default_max_instances)
     {
         this->vulkan_instance = vulkan_instance;
         this->swap_chain_image_count = swap_chain_image_count;
         this->growth_factor = growth_factor;
+        this->default_max_instances = default_max_instances;
 
         create_uniform_buffers();
+
+        // Create one large, persistently-mapped instance buffer per frame.
+        instance_buffers.resize(swap_chain_image_count);
+        instance_buffer_offsets.assign(swap_chain_image_count, 0);
+
+        VkDeviceSize instance_buffer_size = sizeof(glm::mat4) * static_cast<VkDeviceSize>(default_max_instances);
+        for (size_t i = 0; i < swap_chain_image_count; i++)
+        {
+            instance_buffers[i] = create_instance_buffer(instance_buffer_size);
+        }
     }
 
     void Vulkan_Buffer_Manager::set_growth_factor(const uint32_t growth_factor)
@@ -34,9 +45,12 @@ namespace vulvox
         instance_buffers.clear();
     }
 
-    void Vulkan_Buffer_Manager::begin_frame()
+    void Vulkan_Buffer_Manager::begin_frame(const uint32_t current_frame)
     {
-        instance_buffer_requests = 0;
+        // Reset the allocation cursor for the current frame; next allocations will start from 0
+        assert(current_frame < instance_buffer_offsets.size());
+        instance_buffer_offsets[current_frame] = 0;
+        instance_buffer_requests = 0; //retain for compatibility
     }
 
     Buffer& Vulkan_Buffer_Manager::get_uniform_buffer(const uint32_t current_frame)

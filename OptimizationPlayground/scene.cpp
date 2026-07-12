@@ -103,11 +103,14 @@ void Scene::draw()
     instance_model_matrix = glm::scale(instance_model_matrix, glm::vec3(5.f,5.f,5.f));
     instance_model_matrix = glm::translate(instance_model_matrix, glm::vec3(0.f, 0.f, 0.f));
 
+    static std::vector<glm::mat4> instances(1);
+    static std::vector<uint32_t> tex_idx(1);
+    static std::vector<glm::vec4> uvs(1);
+    instances[0] = instance_model_matrix;
+    tex_idx[0] = 0;
+    uvs[0] = glm::vec4(0.f, 0.f, 2.f, 2.f);
 
-    //std::cout << glm::to_string(instance_model_matrix);
-
-    //renderer->draw_planes("texture_array_test", { instance_model_matrix }, { 0 }, { { 0.f, 2.f, 0.f,2.f } });
-    renderer->draw_planes("texture_array_test", { instance_model_matrix }, { 0 }, { {0.f, 0.f, 2.f, 2.f} });
+    renderer->draw_planes("texture_array_test", instances, tex_idx, uvs);
     
     //renderer->draw_model_with_texture_array("cube", "texture_array_test", 1, konata_matrix);
 }
