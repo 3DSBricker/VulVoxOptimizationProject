@@ -20,16 +20,17 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
-
-//GLFW & Vulkan
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include <chrono>
 
 //GLM
 //Force depth range from 0.0 to 1.0 (Vulkan standard), instead of -1.0 to 1.0
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+//GLFW & Vulkan
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 //Include hash function for comparing vertices in an unordered map structure
 #define GLM_ENABLE_EXPERIMENTAL
@@ -59,6 +60,8 @@
 #include "mvp_handler.h"
 #include "instance_data.h"
 #include "texture_array_index_binding.h"
+#include "frame_statistics.h"
+#include "renderer_configuration.h"
 
 #include "vulkan_instance.h"
 #include "vulkan_buffer.h"

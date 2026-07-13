@@ -8,6 +8,7 @@ namespace vulvox
 
         Model() = default;
         Model(Vulkan_Instance* instance, Vulkan_Command_Pool& command_pool, const std::filesystem::path& path_to_model);
+        Model(Vulkan_Instance* instance, Vulkan_Command_Pool& command_pool, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 
         uint64_t vertex_buffer_size;
         uint64_t index_buffer_size;
@@ -23,6 +24,7 @@ namespace vulvox
     private:
 
         void load_model(Vulkan_Command_Pool& command_pool, const std::filesystem::path& path_to_model);
+        void upload_mesh(Vulkan_Command_Pool& command_pool, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 
         /// <summary>
         /// Creates the memory buffer containing the vertex data

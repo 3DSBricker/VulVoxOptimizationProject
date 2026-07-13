@@ -22,8 +22,10 @@ namespace vulvox
         VkFormat image_format = VK_FORMAT_UNDEFINED;
         VkExtent2D extent = { 0,0 };
 
-        //Buffers that hold the target images for renderpass
-        std::vector<VkFramebuffer> framebuffers;
+        //The raw swap chain images and their views - used directly by dynamic rendering
+        //(VkRenderingAttachmentInfo) and by the per-frame sync2 layout transitions in Vulkan_Engine.
+        //No framebuffers anymore: those were only needed for VkRenderPass.
+        std::vector<VkImage> images;
         std::vector<VkImageView> image_views;
 
     private:
@@ -38,8 +40,6 @@ namespace vulvox
         VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) const;
 
         void create_image_views();
-
-        std::vector<VkImage> swap_chain_images;
 
 
     };

@@ -10,9 +10,9 @@ namespace vulvox
 
     Renderer::~Renderer() = default;
 
-    void Renderer::init(uint32_t width, uint32_t height, float field_of_view, float near_plane, float far_plane)
+    void Renderer::init(uint32_t width, uint32_t height, float field_of_view, float near_plane, float far_plane, const Renderer_Configuration& configuration)
     {
-        vulkan_engine->init(width, height);
+        vulkan_engine->init(width, height, configuration);
         vulkan_engine->get_mvp_handler().set_field_of_view(field_of_view);
         vulkan_engine->get_mvp_handler().set_near_plane(near_plane);
         vulkan_engine->get_mvp_handler().set_far_plane(far_plane);
@@ -86,6 +86,11 @@ namespace vulvox
         vulkan_engine->draw_model(model_name, texture_name, model_matrix);
     }
 
+    void Renderer::draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix)
+    {
+        vulkan_engine->draw_mesh(mesh_name, texture_name, model_matrix);
+    }
+
     void Renderer::draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix)
     {
         vulkan_engine->draw_model_with_texture_array(model_name, texture_array_name, texture_index, model_matrix);
@@ -109,6 +114,11 @@ namespace vulvox
     void Renderer::load_model(const std::string& model_name, const std::filesystem::path& path)
     {
         vulkan_engine->load_model(model_name, path);
+    }
+
+    void Renderer::load_mesh(const std::string& mesh_name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+    {
+        vulkan_engine->load_mesh(mesh_name, vertices, indices);
     }
 
     void Renderer::load_texture(const std::string& texture_name, const std::filesystem::path& path)
@@ -182,5 +192,10 @@ namespace vulvox
     std::string Renderer::get_memory_statistics() const
     {
         return vulkan_engine->get_memory_statistics();
+    }
+
+    const Frame_Statistics& Renderer::get_frame_statistics() const
+    {
+        return vulkan_engine->get_frame_statistics();
     }
 }

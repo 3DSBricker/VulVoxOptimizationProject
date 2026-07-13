@@ -173,6 +173,12 @@
     <ClInclude Include="imgui_context.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="frame_statistics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="renderer_configuration.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="imgui\LICENSE.txt">

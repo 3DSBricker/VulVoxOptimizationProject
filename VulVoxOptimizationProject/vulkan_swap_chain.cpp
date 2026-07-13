@@ -76,8 +76,8 @@ namespace vulvox
 
         //Store the handles to the images inside the swap chains so we can write to them
         vkGetSwapchainImagesKHR(vulkan_instance->device, swap_chain, &image_count, nullptr);
-        swap_chain_images.resize(image_count);
-        vkGetSwapchainImagesKHR(vulkan_instance->device, swap_chain, &image_count, swap_chain_images.data());
+        images.resize(image_count);
+        vkGetSwapchainImagesKHR(vulkan_instance->device, swap_chain, &image_count, images.data());
 
         image_format = surface_format.format;
         extent = swap_extent;
@@ -106,11 +106,8 @@ namespace vulvox
 
     void Vulkan_Swap_Chain::cleanup_swap_chain()
     {
-        for (auto& framebuffer : framebuffers)
-        {
-            vkDestroyFramebuffer(vulkan_instance->device, framebuffer, nullptr);
-        }
-
+        //No framebuffers to destroy anymore - dynamic rendering renders directly into the
+        //swap chain image views, there's no VkFramebuffer object tying them to a render pass.
         for (auto& image_view : image_views)
         {
             vkDestroyImageView(vulkan_instance->device, image_view, nullptr);
@@ -182,13 +179,13 @@ namespace vulvox
 
     void Vulkan_Swap_Chain::create_image_views()
     {
-        image_views.resize(swap_chain_images.size());
+        image_views.resize(images.size());
 
-        for (size_t i = 0; i < swap_chain_images.size(); i++)
+        for (size_t i = 0; i < images.size(); i++)
         {
             VkImageViewCreateInfo view_info{};
             view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            view_info.image = swap_chain_images[i];
+            view_info.image = images[i];
             view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
             view_info.format = image_format;
 

@@ -59,6 +59,14 @@ namespace vulvox
 
         std::string get_memory_statistics() const;
 
+        /// <summary>
+        /// True if the selected device exposes descriptor indexing features sufficient
+        /// for a bindless texture setup (update-after-bind, partially bound, non-uniform
+        /// indexing, variable descriptor count, runtime descriptor arrays).
+        /// Useful to know before building bindless descriptor layouts in a later phase.
+        /// </summary>
+        bool supports_bindless_textures() const { return bindless_textures_supported; }
+
         //Vulkan and device contexts
         VkInstance instance = VK_NULL_HANDLE; //Vulkan context (driver access)
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -73,6 +81,13 @@ namespace vulvox
         VkQueue present_queue = VK_NULL_HANDLE;
 
     private:
+
+        //Set once the logical device is created, based on VkPhysicalDeviceVulkan12Features support.
+        bool bindless_textures_supported = false;
+
+        //Queries VkPhysicalDeviceVulkan13Features / Vulkan12Features support for a candidate device.
+        //Required: dynamicRendering + synchronization2 (Vulkan 1.3 core features we rely on everywhere).
+        bool check_required_1_3_features(const VkPhysicalDevice& physical_device_candidate) const;
 
         //Creates a vulkan instance so we can access the driver
         void create_instance();
@@ -95,7 +110,10 @@ namespace vulvox
         std::string get_physical_device_type(const VkPhysicalDevice& physical_device) const;
         std::string get_physical_device_vulkan_support(const VkPhysicalDevice& physical_device) const;
 
-        //Required device extensions
+        //Required device extensions.
+        //Dynamic rendering, synchronization2 and descriptor indexing are core Vulkan 1.3 / 1.2
+        //features now (enabled via the Vulkan12Features/Vulkan13Features feature structs), so they
+        //no longer need to be listed here as extension strings.
         const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
         const std::vector<const char*> validation_layers = { "VK_LAYER_KHRONOS_validation" };
 

@@ -18,7 +18,7 @@ namespace vulvox
         // Initialize buffer manager.
         // default_buffers_per_frame: how many instance sub-buffers to preallocate per-frame (helps avoid runtime VMA allocations)
         // default_max_instances: maximum number of instances expected per instance-buffer (preallocates buffer size = sizeof(mat4) * default_max_instances)
-        void init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor = 10, const uint32_t default_buffers_per_frame = 16, const uint32_t default_max_instances = 65536);
+        void init(Vulkan_Instance* vulkan_instance, uint32_t frames_in_flight, VkDeviceSize instance_arena_size);
         void destroy();
 
         /// <summary>
@@ -73,12 +73,12 @@ namespace vulvox
             const VkDeviceSize alignment = 16;
             VkDeviceSize aligned_offset = (instance_buffer_offsets[current_frame] + (alignment - 1)) & ~(alignment - 1);
 
-            // If the data doesn't fit, grow the buffer (using growth_factor)
+            // Never recreate a buffer while it is referenced by the command buffer:
+            // that would invalidate earlier commands in this same frame.
             VkDeviceSize required_size = aligned_offset + data_size;
             if (required_size > instance_buffers[current_frame].size)
             {
-                VkDeviceSize new_size = required_size + sizeof(T) * static_cast<VkDeviceSize>(growth_factor);
-                instance_buffers[current_frame].recreate(*vulkan_instance, new_size);
+                throw std::runtime_error("Per-frame instance upload arena exhausted. Increase Renderer_Configuration::instance_upload_arena_bytes.");
             }
 
             // Copy into mapped memory
@@ -90,7 +90,22 @@ namespace vulvox
             // Update cursor
             instance_buffer_offsets[current_frame] = aligned_offset + data_size;
 
+            // Count this host->GPU upload for profiling
+            if (current_frame < instance_uploads.size())
+            {
+                instance_uploads[current_frame]++;
+            }
+
             return InstanceBufferRef{ current_frame, aligned_offset };
+        }
+
+        /// <summary>
+        /// Retrieve the number of per-frame host uploads (copy_to_instance_buffer calls) for a given frame index.
+        /// </summary>
+        uint32_t get_frame_uploads(const uint32_t frame) const
+        {
+            if (frame < instance_uploads.size()) return instance_uploads[frame];
+            return 0;
         }
 
     private:
@@ -112,7 +127,6 @@ namespace vulvox
 
         uint32_t swap_chain_image_count = 0;
         uint32_t instance_buffer_requests = 0; // retained for compatibility
-        uint32_t growth_factor = 10;
 
         //Uniform buffers, data available across shaders
         std::vector<Buffer> uniform_buffers;
@@ -122,6 +136,9 @@ namespace vulvox
 
         // Per-frame byte cursor into the instance buffer
         std::vector<VkDeviceSize> instance_buffer_offsets;
+
+        // Number of persistently-mapped instance-buffer writes in each frame.
+        std::vector<uint32_t> instance_uploads;
 
         // Configured default max instances per per-frame buffer (used at init)
         uint32_t default_max_instances = 0;

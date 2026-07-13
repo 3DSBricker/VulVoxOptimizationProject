@@ -34,6 +34,20 @@ namespace vulvox
 
         void transition_image_layout(Vulkan_Command_Pool& command_pool, VkImageLayout new_layout);
 
+        /// <summary>
+        /// Records a synchronization2 image memory barrier on an already-open command buffer.
+        /// Use this (instead of transition_image_layout) whenever you're already recording a
+        /// frame's command buffer and don't want a separate single-time-submit round trip -
+        /// e.g. transitioning the swapchain image / depth image in/out of dynamic rendering.
+        /// </summary>
+        static void cmd_transition_image_layout(
+            VkCommandBuffer command_buffer,
+            VkImage image,
+            VkImageAspectFlags aspect_flags,
+            uint32_t layer_count,
+            VkImageLayout old_layout, VkImageLayout new_layout,
+            VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+            VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
 
         void destroy();
 

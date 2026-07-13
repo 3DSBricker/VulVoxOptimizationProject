@@ -36,9 +36,18 @@ int main()
 
             renderer.start_draw();
             renderer.set_imgui_callback([&renderer, &slider_value]() {
+                const auto& stats = renderer.get_frame_statistics();
                 ImGui::Begin("Demo Window");
                 ImGui::Text("Hello, ImGui!");
                 ImGui::Text(renderer.get_memory_statistics().c_str());
+                ImGui::SeparatorText("Frame profiler");
+                ImGui::Text("FPS: %.1f | Avg frame: %.2f ms", stats.frames_per_second, stats.average_frame_time_ms);
+                ImGui::Text("CPU render: %.3f ms", stats.cpu_frame_time_ms);
+                ImGui::Text("GPU frame: %.3f ms", stats.gpu_frame_time_ms);
+                ImGui::Text("Draw calls: %llu", static_cast<unsigned long long>(stats.draw_calls));
+                ImGui::Text("Vertices: %llu | Indices: %llu", static_cast<unsigned long long>(stats.vertices), static_cast<unsigned long long>(stats.indices));
+                ImGui::Text("Queue submits: %u | Host buffer uploads: %u", stats.queue_submits, stats.host_buffer_uploads);
+                ImGui::Text("Pipeline binds: %u | Descriptor binds: %u", stats.pipeline_binds, stats.descriptor_set_binds);
                 ImGui::SliderFloat("Slider", &slider_value, 0.0f, 1.0f);
                 ImGui::End();
                 });

@@ -9,6 +9,12 @@ namespace vulvox
         load_model(command_pool, path_to_model);
     }
 
+    Model::Model(Vulkan_Instance* instance, Vulkan_Command_Pool& command_pool, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+        : vulkan_instance(instance)
+    {
+        upload_mesh(command_pool, vertices, indices);
+    }
+
     void Model::destroy()
     {
         index_buffer.destroy(vulkan_instance->allocator);
@@ -72,16 +78,24 @@ namespace vulvox
             }
         }
 
-        vertex_buffer_size = sizeof(vertices[0]) * vertices.size();
-        index_buffer_size = sizeof(indices[0]) * indices.size();
-
-        vertex_count = static_cast<uint32_t>(vertices.size());
-        index_count = static_cast<uint32_t>(indices.size());
-
-        create_vertex_buffer(command_pool, vertices);
-        create_index_buffer(command_pool, indices);
+        upload_mesh(command_pool, vertices, indices);
 
         std::cout << "Model " << path_to_model.filename() << " loaded containing " << face_count << " triangles with " << vertices.size() << " vertices and " << indices.size() << " indices." << std::endl;
+    }
+
+    void Model::upload_mesh(Vulkan_Command_Pool& command_pool, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+    {
+        if (vertices.empty() || indices.empty())
+        {
+            throw std::runtime_error("A mesh must contain at least one vertex and one index.");
+        }
+
+        vertex_buffer_size = sizeof(Vertex) * vertices.size();
+        index_buffer_size = sizeof(uint32_t) * indices.size();
+        vertex_count = static_cast<uint32_t>(vertices.size());
+        index_count = static_cast<uint32_t>(indices.size());
+        create_vertex_buffer(command_pool, vertices);
+        create_index_buffer(command_pool, indices);
     }
 
     void Model::create_vertex_buffer(Vulkan_Command_Pool& command_pool, const std::vector<Vertex>& vertices)

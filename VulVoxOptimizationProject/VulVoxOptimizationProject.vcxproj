@@ -356,6 +356,8 @@
     <ClInclude Include="imgui\imstb_textedit.h" />
     <ClInclude Include="imgui\imstb_truetype.h" />
     <ClInclude Include="imgui_context.h" />
+    <ClInclude Include="frame_statistics.h" />
+    <ClInclude Include="renderer_configuration.h" />
     <ClInclude Include="instance_data.h" />
     <ClInclude Include="model.h" />
     <ClInclude Include="mvp.h" />

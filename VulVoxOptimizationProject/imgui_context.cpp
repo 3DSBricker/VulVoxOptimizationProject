@@ -3,7 +3,7 @@
 
 namespace vulvox
 {
-    ImGui_Context::ImGui_Context(GLFWwindow* glfw_window, vulvox::Vulkan_Instance& vulkan_instance, VkRenderPass render_pass, const int max_swapchain_images)
+    ImGui_Context::ImGui_Context(GLFWwindow* glfw_window, vulvox::Vulkan_Instance& vulkan_instance, VkFormat color_attachment_format, const int max_swapchain_images)
         : device(vulkan_instance.device)
     {
         std::cout << "Initializing imgui.." << std::endl;
@@ -17,28 +17,38 @@ namespace vulvox
         pool_info.poolSizeCount = 1;
         pool_info.pPoolSizes = &pool_sizes;
 
-
         if (vkCreateDescriptorPool(vulkan_instance.device, &pool_info, nullptr, &descriptor_pool) != VK_SUCCESS)
         {
             throw std::runtime_error("Imgui initialization failed, Descriptor pool creation failed!");
         }
 
-        //Setup Dear ImGui context
+        // Setup Dear ImGui context
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; //Enable keyboard controls
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  //Enable gamepad controls
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable keyboard controls
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable gamepad controls
 
-        //Setup imgui vulkan backend
-        ImGui_ImplGlfw_InitForVulkan(glfw_window, true); //Second parameter installs glfw callbacks and chain through existing ones
+        // Setup imgui vulkan backend
+        ImGui_ImplGlfw_InitForVulkan(glfw_window, true); // Second parameter installs glfw callbacks and chains through existing ones
+        
         ImGui_ImplVulkan_InitInfo imgui_vulkan_init_info{};
         imgui_vulkan_init_info.Instance = vulkan_instance.instance;
         imgui_vulkan_init_info.PhysicalDevice = vulkan_instance.physical_device;
         imgui_vulkan_init_info.Device = vulkan_instance.device;
         imgui_vulkan_init_info.Queue = vulkan_instance.graphics_queue;
         imgui_vulkan_init_info.DescriptorPool = descriptor_pool;
-        imgui_vulkan_init_info.RenderPass = render_pass;
+        
+        // Vulkan 1.3 Dynamic Rendering configuratie
+        imgui_vulkan_init_info.UseDynamicRendering = true;
+        
+        // Setup Pipeline Rendering Info
+        imgui_vulkan_init_info.PipelineRenderingCreateInfo = {};
+        imgui_vulkan_init_info.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        imgui_vulkan_init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        imgui_vulkan_init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_attachment_format;
+        
+        // RenderPass verwijderd[cite: 2]
         imgui_vulkan_init_info.Subpass = 0;
         imgui_vulkan_init_info.MinImageCount = 2;
         imgui_vulkan_init_info.ImageCount = max_swapchain_images;

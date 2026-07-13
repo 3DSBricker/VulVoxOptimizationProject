@@ -35,8 +35,9 @@ namespace vulvox
         std::cout << "Window initialized." << std::endl;
     }
 
-    void Vulkan_Engine::init_vulkan()
+    void Vulkan_Engine::init_vulkan(const Renderer_Configuration& configuration)
     {
+        this->configuration = configuration;
         std::cout << "Init vulkan.." << std::endl;
 
         vulkan_instance.init_instance();
@@ -47,36 +48,41 @@ namespace vulvox
         swap_chain.create_swap_chain(window, vulkan_instance.surface);
         mvp_handler.set_aspect_ratio(static_cast<float>(width) / static_cast<float>(height));
 
-        create_render_pass();
         create_mvp_descriptor_set_layout();
         create_texture_descriptor_set_layout();
         create_graphics_pipeline();
         command_pool = Vulkan_Command_Pool(&vulkan_instance, MAX_FRAMES_IN_FLIGHT);
         create_depth_resources();
-        create_framebuffers();
 
         // Initialize buffer manager with preallocation to avoid runtime VMA allocations
         // growth_factor: extra space when resizing; default_buffers_per_frame: number of instance buffers to preallocate per frame
         // default_max_instances: max instances per instance-buffer
-        buffer_manager.init(&vulkan_instance, MAX_FRAMES_IN_FLIGHT, /*growth_factor*/ 10, /*default_buffers_per_frame*/ 16, /*default_max_instances*/ 65536);
+        buffer_manager.init(&vulkan_instance, MAX_FRAMES_IN_FLIGHT, configuration.instance_upload_arena_bytes);
 
         create_descriptor_pool();
         create_descriptor_sets();
         create_sync_objects();
+        create_timestamp_queries();
 
         std::cout << "Vulkan initialized." << std::endl;
     }
 
-    void Vulkan_Engine::init(uint32_t width, uint32_t height)
+    void Vulkan_Engine::init(uint32_t width, uint32_t height, const Renderer_Configuration& configuration)
     {
         init_window(width, height);
-        init_vulkan();
+        init_vulkan(configuration);
         is_initialized = true;
+        fps_sample_start = std::chrono::steady_clock::now();
     }
 
     void Vulkan_Engine::init_imgui()
     {
-        imgui_context = std::make_unique<ImGui_Context>(window, vulkan_instance, render_pass, MAX_FRAMES_IN_FLIGHT);
+        // NOTE: ImGui_Context::ImGui_Context used to take a VkRenderPass. With dynamic rendering
+        // there is no render pass object anymore, so this now needs to take the color/depth
+        // attachment formats and set ImGui_ImplVulkan_InitInfo::UseDynamicRendering = true plus
+        // PipelineRenderingCreateInfo instead. imgui_context.h/.cpp weren't part of this upload,
+        // so I couldn't patch them - update that constructor to match this call site (see chat).
+        imgui_context = std::make_unique<ImGui_Context>(window, vulkan_instance, swap_chain.image_format, MAX_FRAMES_IN_FLIGHT);
     }
 
     void Vulkan_Engine::disable_imgui()
@@ -112,7 +118,6 @@ namespace vulvox
         vkDestroyPipeline(vulkan_instance.device, instance_tex_array_pipeline, nullptr);
 
         vkDestroyPipelineLayout(vulkan_instance.device, pipeline_layout, nullptr);
-        vkDestroyRenderPass(vulkan_instance.device, render_pass, nullptr);
 
         //Descriptor sets will be destroyed with the pool
         vkDestroyDescriptorPool(vulkan_instance.device, descriptor_pool, nullptr);
@@ -151,6 +156,12 @@ namespace vulvox
             vkDestroySemaphore(vulkan_instance.device, image_available_semaphores.at(i), nullptr);
             vkDestroySemaphore(vulkan_instance.device, render_finished_semaphores.at(i), nullptr);
             vkDestroyFence(vulkan_instance.device, in_flight_fences.at(i), nullptr);
+        }
+
+        if (timestamp_query_pool != VK_NULL_HANDLE)
+        {
+            vkDestroyQueryPool(vulkan_instance.device, timestamp_query_pool, nullptr);
+            timestamp_query_pool = VK_NULL_HANDLE;
         }
 
         command_pool.destroy();
@@ -199,6 +210,18 @@ namespace vulvox
             std::string error_string = "Failed to load model " + model_name + " with path: " + path.string();
             throw std::runtime_error(error_string);
         }
+    }
+
+    void Vulkan_Engine::load_mesh(const std::string& mesh_name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+    {
+        if (models.contains(mesh_name))
+        {
+            throw std::runtime_error("A model or mesh named '" + mesh_name + "' is already loaded.");
+        }
+
+        models.emplace(std::piecewise_construct,
+            std::forward_as_tuple(mesh_name),
+            std::forward_as_tuple(&vulkan_instance, command_pool, vertices, indices));
     }
 
     void Vulkan_Engine::load_texture(const std::string& texture_name, const std::filesystem::path& path)
@@ -265,7 +288,9 @@ namespace vulvox
 
     void Vulkan_Engine::start_draw()
     {
+        cpu_frame_start = std::chrono::steady_clock::now();
         vkWaitForFences(vulkan_instance.device, 1, &in_flight_fences[current_frame], VK_TRUE, UINT64_MAX);
+        read_gpu_timestamp(current_frame);
 
         //Ask the swapchain for a render image to target
         VkResult result = vkAcquireNextImageKHR(vulkan_instance.device, swap_chain.swap_chain, UINT64_MAX, image_available_semaphores[current_frame], nullptr, &current_image_index);
@@ -290,6 +315,13 @@ namespace vulvox
 
         //Reset the per-frame instance buffer cursor
         buffer_manager.begin_frame(current_frame);
+        reset_command_state_cache();
+        frame_statistics.draw_calls = 0;
+        frame_statistics.vertices = 0;
+        frame_statistics.indices = 0;
+        frame_statistics.queue_submits = 0;
+        frame_statistics.pipeline_binds = 0;
+        frame_statistics.descriptor_set_binds = 0;
 
         //Update global variables (camera etc.)
         update_uniform_buffer();
@@ -341,6 +373,7 @@ namespace vulvox
         {
             throw std::runtime_error("Failed to submit draw command buffer!");
         }
+        frame_statistics.queue_submits++;
 
         VkPresentInfoKHR present_info{};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -371,6 +404,17 @@ namespace vulvox
         }
 
         //Rotate to next frame resources
+        frame_statistics.host_buffer_uploads = 1 + buffer_manager.get_frame_uploads(current_frame);
+        frame_statistics.cpu_frame_time_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_frame_start).count();
+        ++fps_sample_frame_count;
+        const double sample_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - fps_sample_start).count();
+        if (sample_seconds >= 0.5)
+        {
+            frame_statistics.frames_per_second = fps_sample_frame_count / sample_seconds;
+            frame_statistics.average_frame_time_ms = 1000.0 / frame_statistics.frames_per_second;
+            fps_sample_start = std::chrono::steady_clock::now();
+            fps_sample_frame_count = 0;
+        }
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
@@ -390,26 +434,32 @@ namespace vulvox
 
         //Set the vertex buffers
         std::array<VkDeviceSize, 1> offsets = { 0 };
-        vkCmdBindVertexBuffers(current_command_buffer, 0, 1, &models.at(model_name).vertex_buffer.buffer, offsets.data());
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
 
         //Set the index buffers
-        std::vector<VkBuffer> index_buffers;
-        vkCmdBindIndexBuffer(current_command_buffer, models.at(model_name).index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
 
         //Bind the uniform buffers
         //Bind set 0, the MVP buffer
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets.tri_descriptor_set[current_frame], 0, nullptr);
+        bind_descriptor_set(0, descriptor_sets.tri_descriptor_set[current_frame]);
         //Bind set 1, the texture
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &texture_descriptor_sets.at(texture_name), 0, nullptr);
+        bind_descriptor_set(1, texture_descriptor_sets.at(texture_name));
 
         //Set the push constants (model matrix)
         vkCmdPushConstants(current_command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model_matrix);
 
         //Bind to graphics pipeline: The shaders and configuration used to the render the object
-        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
+        bind_pipeline(vertex_pipeline);
 
         //Draw command, set vertex and instance counts (we're not using instancing here) and indices
         vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, 1, 0, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += models.at(model_name).index_count;
+    }
+
+    void Vulkan_Engine::draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix)
+    {
+        draw_model(mesh_name, texture_name, model_matrix);
     }
 
     void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix)
@@ -436,12 +486,12 @@ namespace vulvox
 
         //Bind the uniform buffers
         //Bind set 0, the MVP buffer
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets.tri_descriptor_set[current_frame], 0, nullptr);
+        bind_descriptor_set(0, descriptor_sets.tri_descriptor_set[current_frame]);
         //Bind set 1, the texture
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &texture_array_descriptor_sets.at(texture_array_name), 0, nullptr);
+        bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
 
         //Binding point 0 - mesh vertex buffer
-        vkCmdBindVertexBuffers(current_command_buffer, 0, 1, &models.at(model_name).vertex_buffer.buffer, offsets.data());
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
 
         ////Binding point 1 - instance data buffer
         //vkCmdBindVertexBuffers(current_command_buffer, 1, 1, &instance_data_buffers[current_frame].buffer, offsets.data());
@@ -453,12 +503,14 @@ namespace vulvox
         vkCmdPushConstants(current_command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model_matrix);
 
         //Bind index buffer
-        vkCmdBindIndexBuffer(current_command_buffer, models.at(model_name).index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
 
-        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
+        bind_pipeline(vertex_pipeline);
 
         //Draw command, set vertex and instance counts (we're not using instancing here) and indices
         vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, 1, 0, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += models.at(model_name).index_count;
     }
 
     void Vulkan_Engine::draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices)
@@ -482,26 +534,28 @@ namespace vulvox
 
         //Bind the uniform buffers
         //Bind set 0, the MVP buffer
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets.instance_descriptor_set[current_frame], 0, nullptr);
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
         //Bind set 1, the texture
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &texture_descriptor_sets.at(texture_name), 0, nullptr);
+        bind_descriptor_set(1, texture_descriptor_sets.at(texture_name));
 
         //Binding point 0 - mesh vertex buffer
-        vkCmdBindVertexBuffers(current_command_buffer, 0, 1, &models.at(model_name).vertex_buffer.buffer, offsets.data());
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
 
         //Binding point 1 - instance data buffer (with offset returned by the buffer manager)
         VkDeviceSize instance_offset = model_matrices_ref.offset;
         VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 1, 1, &instance_buf, &instance_offset);
+        bind_vertex_buffer(1, instance_buf, instance_offset);
 
         //Bind index buffer
-        vkCmdBindIndexBuffer(current_command_buffer, models.at(model_name).index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
 
-        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instance_pipeline);
+        bind_pipeline(instance_pipeline);
 
         //Render instances
         uint32_t instance_count = static_cast<uint32_t>(model_matrices.size());
         vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, instance_count, 0, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * instance_count;
     }
 
     void Vulkan_Engine::draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
@@ -525,31 +579,33 @@ namespace vulvox
 
         //Bind the uniform buffers
         //Bind set 0, the MVP buffer
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets.instance_descriptor_set[current_frame], 0, nullptr);
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
         //Bind set 1, the textures
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &texture_array_descriptor_sets.at(texture_array_name), 0, nullptr);
+        bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
 
         //Binding point 0 - mesh vertex buffer
-        vkCmdBindVertexBuffers(current_command_buffer, 0, 1, &models.at(model_name).vertex_buffer.buffer, offsets.data());
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
 
         //Binding point 1 - instance data buffer
         VkDeviceSize instance_offset = model_matrices_ref.offset;
         VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 1, 1, &instance_buf, &instance_offset);
+        bind_vertex_buffer(1, instance_buf, instance_offset);
 
         //Binding point 2 - texture array index buffer
         VkDeviceSize tex_idx_offset = texture_index_ref.offset;
         VkBuffer tex_idx_buf = buffer_manager.get_instance_buffer(texture_index_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 2, 1, &tex_idx_buf, &tex_idx_offset);
+        bind_vertex_buffer(2, tex_idx_buf, tex_idx_offset);
 
         //Bind index buffer
-        vkCmdBindIndexBuffer(current_command_buffer, models.at(model_name).index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
 
-        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instance_tex_array_pipeline);
+        bind_pipeline(instance_tex_array_pipeline);
 
         //Render instances
         uint32_t instance_count = static_cast<uint32_t>(model_matrices.size());
         vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, instance_count, 0, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * instance_count;
     }
 
     void Vulkan_Engine::draw_planes(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs)
@@ -568,30 +624,32 @@ namespace vulvox
 
         //Bind the uniform buffers
         //Bind set 0, the MVP buffer
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets.instance_descriptor_set[current_frame], 0, nullptr);
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
         //Bind set 1, the textures
-        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &texture_array_descriptor_sets.at(texture_array_name), 0, nullptr);
+        bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
 
         //Binding point 1 - instance data buffer
         VkDeviceSize instance_offset = model_matrices_ref.offset;
         VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 1, 1, &instance_buf, &instance_offset);
+        bind_vertex_buffer(1, instance_buf, instance_offset);
 
         //Binding point 2 - texture array index buffer
         VkDeviceSize tex_idx_offset = texture_index_ref.offset;
         VkBuffer tex_idx_buf = buffer_manager.get_instance_buffer(texture_index_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 2, 1, &tex_idx_buf, &tex_idx_offset);
+        bind_vertex_buffer(2, tex_idx_buf, tex_idx_offset);
 
         //Binding point 3 - texture min max uvs
         VkDeviceSize uv_offset = min_max_uv_ref.offset;
         VkBuffer uv_buf = buffer_manager.get_instance_buffer(min_max_uv_ref.buffer_index).buffer;
-        vkCmdBindVertexBuffers(current_command_buffer, 3, 1, &uv_buf, &uv_offset);
+        bind_vertex_buffer(3, uv_buf, uv_offset);
 
-        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instance_plane_pipeline);
+        bind_pipeline(instance_plane_pipeline);
 
         //Render instances
         uint32_t instance_count = static_cast<uint32_t>(model_matrices.size());
         vkCmdDraw(current_command_buffer, 6, instance_count, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.vertices += 6ull * instance_count;
     }
 
     bool Vulkan_Engine::initialized() const
@@ -602,6 +660,63 @@ namespace vulvox
     std::string Vulkan_Engine::get_memory_statistics() const
     {
         return vulkan_instance.get_memory_statistics();
+    }
+
+    const Frame_Statistics& Vulkan_Engine::get_frame_statistics() const
+    {
+        return frame_statistics;
+    }
+
+    void Vulkan_Engine::reset_command_state_cache()
+    {
+        command_state_cache = {};
+    }
+
+    void Vulkan_Engine::bind_pipeline(const VkPipeline pipeline)
+    {
+        if (command_state_cache.pipeline == pipeline)
+        {
+            return;
+        }
+
+        vkCmdBindPipeline(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        command_state_cache.pipeline = pipeline;
+        ++frame_statistics.pipeline_binds;
+    }
+
+    void Vulkan_Engine::bind_descriptor_set(const uint32_t set_index, const VkDescriptorSet descriptor_set)
+    {
+        if (command_state_cache.descriptor_sets[set_index] == descriptor_set)
+        {
+            return;
+        }
+
+        vkCmdBindDescriptorSets(current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, set_index, 1, &descriptor_set, 0, nullptr);
+        command_state_cache.descriptor_sets[set_index] = descriptor_set;
+        ++frame_statistics.descriptor_set_binds;
+    }
+
+    void Vulkan_Engine::bind_vertex_buffer(const uint32_t binding, const VkBuffer buffer, const VkDeviceSize offset)
+    {
+        if (command_state_cache.vertex_buffers[binding] == buffer && command_state_cache.vertex_offsets[binding] == offset)
+        {
+            return;
+        }
+
+        vkCmdBindVertexBuffers(current_command_buffer, binding, 1, &buffer, &offset);
+        command_state_cache.vertex_buffers[binding] = buffer;
+        command_state_cache.vertex_offsets[binding] = offset;
+    }
+
+    void Vulkan_Engine::bind_index_buffer(const VkBuffer buffer)
+    {
+        if (command_state_cache.index_buffer == buffer)
+        {
+            return;
+        }
+
+        vkCmdBindIndexBuffer(current_command_buffer, buffer, 0, VK_INDEX_TYPE_UINT32);
+        command_state_cache.index_buffer = buffer;
     }
 
     void Vulkan_Engine::update_uniform_buffer()
@@ -632,8 +747,7 @@ namespace vulvox
 
         mvp_handler.set_aspect_ratio(static_cast<float>(width) / static_cast<float>(height));
 
-        create_depth_resources(); //Depend on depth image
-        create_framebuffers(); //Depend on image views
+        create_depth_resources(); //Depend on depth image. No framebuffers to recreate anymore (dynamic rendering).
     }
 
     void Vulkan_Engine::cleanup_swap_chain()
@@ -643,83 +757,6 @@ namespace vulvox
 
         //Destroy the swap chain
         swap_chain.cleanup_swap_chain();
-    }
-
-    void Vulkan_Engine::create_render_pass()
-    {
-        //The render pass describes the framebuffer attachments 
-        //and how many color and depth buffers there are
-        //and how their content should be handled
-
-        VkAttachmentDescription color_attachment{};
-        color_attachment.format = swap_chain.image_format;
-        color_attachment.samples = VK_SAMPLE_COUNT_1_BIT; //No multisampling
-        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; //Clear buffer before rendering
-        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; //Store rendered content
-
-        //No stencil buffer operations yet, so dont care about the data
-        color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-
-        //This buffer is used for presentation
-        color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-        //Index of fragment shader out_color
-        VkAttachmentReference color_attachment_ref{};
-        color_attachment_ref.attachment = 0;
-        color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        //Describe how the depth buffer is handled
-        VkAttachmentDescription depth_attachment{};
-        depth_attachment.format = vulkan_instance.find_depth_format();
-        depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; //We dont care what the gpu does with the data after determining the depth
-        depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; //We dont care about previous depth content
-        depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference depth_attachment_ref{};
-        depth_attachment_ref.attachment = 1;
-        depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        //Attach the color and depth buffers to the single subpass
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_attachment_ref;
-        subpass.pDepthStencilAttachment = &depth_attachment_ref;
-
-        //Setup the dependencies between the subpasses (cant start b before a)
-        VkSubpassDependency dependency{};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-
-        //Wait until the swap chain finished reading before writing a new image
-        //Also wait with writing a new depth buffer until the previous is done being read
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        dependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-        //Attach the color and depth attachements to the render pass
-        std::array<VkAttachmentDescription, 2> attachments = { color_attachment, depth_attachment };
-
-        VkRenderPassCreateInfo render_pass_info{};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-        render_pass_info.pAttachments = attachments.data();
-        render_pass_info.subpassCount = 1;
-        render_pass_info.pSubpasses = &subpass;
-        render_pass_info.dependencyCount = 1;
-        render_pass_info.pDependencies = &dependency;
-
-        if (vkCreateRenderPass(vulkan_instance.device, &render_pass_info, nullptr, &render_pass) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create render pass!");
-        }
     }
 
     void Vulkan_Engine::create_graphics_pipeline()
@@ -812,7 +849,7 @@ namespace vulvox
         rasterizer_info.rasterizerDiscardEnable = VK_FALSE; //If true, discards all geometery
         rasterizer_info.polygonMode = VK_POLYGON_MODE_FILL; //Full render, switch for wireframe or points (among others)
         rasterizer_info.lineWidth = 1.0f; //wider requires wideLines GPU feature
-        rasterizer_info.cullMode = VK_CULL_MODE_NONE; //Backface culling
+        rasterizer_info.cullMode = configuration.enable_back_face_culling ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
         rasterizer_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; //Counter clockwise vertex order determines the front (we flip the y axis)
         rasterizer_info.depthBiasEnable = VK_FALSE;
         rasterizer_info.depthBiasConstantFactor = 0.0f;
@@ -917,9 +954,22 @@ namespace vulvox
         vertex_input_state_info.pVertexBindingDescriptions = binding_descriptions.data(); //spacing between data and per vertex or per instance
         vertex_input_state_info.pVertexAttributeDescriptions = attribute_descriptions.data(); //attribute type, which bindings to load, and offset
 
+        //Dynamic rendering (Vulkan 1.3 core): pipelines declare the attachment formats they'll be
+        //used with directly, instead of being tied to a VkRenderPass + subpass index. This struct
+        //is chained via pNext and must stay alive for all vkCreateGraphicsPipelines calls below.
+        VkFormat color_attachment_format = swap_chain.image_format;
+        VkFormat depth_attachment_format = vulkan_instance.find_depth_format();
+
+        VkPipelineRenderingCreateInfo pipeline_rendering_info{};
+        pipeline_rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        pipeline_rendering_info.colorAttachmentCount = 1;
+        pipeline_rendering_info.pColorAttachmentFormats = &color_attachment_format;
+        pipeline_rendering_info.depthAttachmentFormat = depth_attachment_format;
+
         //Combine the pipeline stages, we change the input and shader stages for the instance and vertex pipelines
         VkGraphicsPipelineCreateInfo pipeline_info{};
         pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &pipeline_rendering_info;
         pipeline_info.pVertexInputState = &vertex_input_state_info; //Differ for the instance and vertex rendering
         pipeline_info.pInputAssemblyState = &input_assembly_info;
         pipeline_info.pViewportState = &viewport_state_info;
@@ -933,7 +983,7 @@ namespace vulvox
         pipeline_info.pStages = shader_stages_info.data(); //Differ for the instance and vertex rendering
 
         pipeline_info.layout = pipeline_layout;
-        pipeline_info.renderPass = render_pass;
+        pipeline_info.renderPass = VK_NULL_HANDLE; //No render pass with dynamic rendering
         pipeline_info.subpass = 0;
         //This pipeline doesn't derive from another 
         //(set VK_PIPELINE_CREATE_DERIVATIVE_BIT, if we want to derive from another)    
@@ -1041,35 +1091,6 @@ namespace vulvox
         }
     }
 
-    /// <summary>
-    /// Creates the framebuffers that can be used as a draw target in the renderpass
-    /// e.g. depth and swap chain images
-    /// </summary>
-    void Vulkan_Engine::create_framebuffers()
-    {
-        swap_chain.framebuffers.resize(swap_chain.image_views.size());
-
-        for (size_t i = 0; i < swap_chain.image_views.size(); i++)
-        {
-            //The swap chain uses multiple images, the render pipeline uses a single depth buffer (protected by semaphores)
-            std::array<VkImageView, 2> attachments = { swap_chain.image_views[i], depth_image.image_view };
-
-            VkFramebufferCreateInfo framebuffer_info{};
-            framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebuffer_info.renderPass = render_pass;
-            framebuffer_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-            framebuffer_info.pAttachments = attachments.data();
-            framebuffer_info.width = swap_chain.extent.width;
-            framebuffer_info.height = swap_chain.extent.height;
-            framebuffer_info.layers = 1; //Only single layer images in the swap chain
-
-            if (vkCreateFramebuffer(vulkan_instance.device, &framebuffer_info, nullptr, &swap_chain.framebuffers[i]) != VK_SUCCESS)
-            {
-                throw std::runtime_error("Failed to create framebuffer!");
-            }
-        }
-    }
-
     void Vulkan_Engine::create_depth_resources()
     {
         VkFormat depth_format = vulkan_instance.find_depth_format();
@@ -1084,6 +1105,21 @@ namespace vulvox
             VMA_MEMORY_USAGE_AUTO);
 
         depth_image.create_image_view();
+
+        //With dynamic rendering there's no render pass to do this for us anymore, so we transition
+        //the depth image into its attachment layout once, right after creation. Because every frame
+        //clears it (LOAD_OP_CLEAR) and doesn't care about preserving it (STORE_OP_DONT_CARE), it
+        //never needs to leave this layout again - no per-frame depth barrier required.
+        VkCommandBuffer command_buffer = command_pool.begin_single_time_commands();
+
+        Image::cmd_transition_image_layout(command_buffer, depth_image.image, depth_image.aspect_flags, 1,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+        command_pool.end_single_time_commands(command_buffer);
+        depth_image.current_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     /// <summary>
@@ -1316,27 +1352,114 @@ namespace vulvox
         }
     }
 
+    void Vulkan_Engine::create_timestamp_queries()
+    {
+        VkQueryPoolCreateInfo query_pool_info{};
+        query_pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        query_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        query_pool_info.queryCount = MAX_FRAMES_IN_FLIGHT * 2;
+
+        if (vkCreateQueryPool(vulkan_instance.device, &query_pool_info, nullptr, &timestamp_query_pool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create timestamp query pool!");
+        }
+    }
+
+    void Vulkan_Engine::read_gpu_timestamp(const uint32_t frame)
+    {
+        if (timestamp_query_pool == VK_NULL_HANDLE)
+        {
+            return;
+        }
+
+        std::array<uint64_t, 4> results{};
+        const VkResult result = vkGetQueryPoolResults(
+            vulkan_instance.device,
+            timestamp_query_pool,
+            frame * 2,
+            2,
+            sizeof(results),
+            results.data(),
+            sizeof(uint64_t) * 2,
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+
+        // A newly-created query has no result yet. Keep the last valid GPU time.
+        if (result == VK_SUCCESS && results[1] != 0 && results[3] != 0)
+        {
+            const auto properties = vulkan_instance.get_physical_device_properties();
+            frame_statistics.gpu_frame_time_ms =
+                static_cast<double>(results[2] - results[0]) * properties.limits.timestampPeriod / 1'000'000.0;
+        }
+    }
+
+    void Vulkan_Engine::transition_swap_chain_image_to_color_attachment()
+    {
+        // NOTE: assumes Vulkan_Swap_Chain exposes the raw per-image VkImage handles as
+        // `swap_chain.images`, parallel to `swap_chain.image_views`. That file wasn't part of
+        // this upload - if the member is named differently, adjust this one line.
+        Image::cmd_transition_image_layout(current_command_buffer, swap_chain.images[current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, 1,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    }
+
+    void Vulkan_Engine::transition_swap_chain_image_to_present()
+    {
+        Image::cmd_transition_image_layout(current_command_buffer, swap_chain.images[current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, 1,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, VK_ACCESS_2_NONE);
+    }
+
     void Vulkan_Engine::start_record_command_buffer()
     {
-        //Describe a new render pass targeting the given image index in the swapchain
-        VkRenderPassBeginInfo render_pass_begin_info{};
-        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        //Start recording a command buffer
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = 0;
+        begin_info.pInheritanceInfo = nullptr;
 
-        //attach this render pass to the swap chain image
-        render_pass_begin_info.renderPass = render_pass;
-        render_pass_begin_info.framebuffer = swap_chain.framebuffers[current_image_index];
+        if (vkBeginCommandBuffer(current_command_buffer, &begin_info) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to begin recording command buffer!");
+        }
 
-        //Cover the whole swap chain image
-        render_pass_begin_info.renderArea.offset = { 0,0 };
-        render_pass_begin_info.renderArea.extent = swap_chain.extent;
+        const uint32_t query_index = current_frame * 2;
+        vkCmdResetQueryPool(current_command_buffer, timestamp_query_pool, query_index, 2);
+        vkCmdWriteTimestamp2(current_command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, timestamp_query_pool, query_index);
 
-        //Clear to black (we use VK_ATTACHMENT_LOAD_OP_CLEAR)
-        //Clear order should be same as attachment order
-        std::array<VkClearValue, 2> clear_colors{};
-        clear_colors[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } }; //Clear image to black
-        clear_colors[1].depthStencil = { 1.0f, 0 }; //Clear depth image to 1.0 (far plane)
-        render_pass_begin_info.clearValueCount = static_cast<uint32_t>(clear_colors.size());
-        render_pass_begin_info.pClearValues = clear_colors.data();
+        //Dynamic rendering (Vulkan 1.3 core) replaces vkCmdBeginRenderPass/VkFramebuffer: we
+        //explicitly transition the swap chain image ourselves instead of the render pass doing it
+        //implicitly through its initial/final layout. The depth image was already transitioned
+        //once in create_depth_resources() and never needs to move again.
+        transition_swap_chain_image_to_color_attachment();
+
+        VkRenderingAttachmentInfo color_attachment_info{};
+        color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachment_info.imageView = swap_chain.image_views[current_image_index];
+        color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachment_info.clearValue.color = { { 0.0f, 0.0f, 0.0f, 1.0f } }; //Clear image to black
+
+        VkRenderingAttachmentInfo depth_attachment_info{};
+        depth_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth_attachment_info.imageView = depth_image.image_view;
+        depth_attachment_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; //We dont care what the gpu does with the data after determining the depth
+        depth_attachment_info.clearValue.depthStencil = { 1.0f, 0 }; //Clear depth image to 1.0 (far plane)
+
+        VkRenderingInfo rendering_info{};
+        rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering_info.renderArea.offset = { 0, 0 };
+        rendering_info.renderArea.extent = swap_chain.extent;
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &color_attachment_info;
+        rendering_info.pDepthAttachment = &depth_attachment_info;
+
+        vkCmdBeginRendering(current_command_buffer, &rendering_info);
 
         //We set viewport and scissor to dynamic earlier, so we define them now
         VkViewport viewport{};
@@ -1351,29 +1474,19 @@ namespace vulvox
         scissor.offset = { 0,0 };
         scissor.extent = swap_chain.extent;
 
-        //Start recording a command buffer
-        VkCommandBufferBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = 0;
-        begin_info.pInheritanceInfo = nullptr;
-
-        if (vkBeginCommandBuffer(current_command_buffer, &begin_info) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to begin recording command buffer!");
-        }
-
-
-        //VK_SUBPASS_CONTENTS_INLINE means we don't use secondary command buffers
-        vkCmdBeginRenderPass(current_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-
-
         vkCmdSetViewport(current_command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(current_command_buffer, 0, 1, &scissor);
     }
 
     void Vulkan_Engine::end_record_command_buffer()
     {
-        vkCmdEndRenderPass(current_command_buffer);
+        vkCmdEndRendering(current_command_buffer);
+
+        //Hand the swap chain image back to the present layout ourselves - the render pass used to
+        //do this via its finalLayout, dynamic rendering leaves it entirely up to us.
+        transition_swap_chain_image_to_present();
+
+        vkCmdWriteTimestamp2(current_command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, timestamp_query_pool, current_frame * 2 + 1);
 
         if (vkEndCommandBuffer(current_command_buffer) != VK_SUCCESS)
         {

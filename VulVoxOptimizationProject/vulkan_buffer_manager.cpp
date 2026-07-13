@@ -3,29 +3,28 @@
 
 namespace vulvox
 {
-    void Vulkan_Buffer_Manager::init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const uint32_t growth_factor, const uint32_t default_buffers_per_frame, const uint32_t default_max_instances)
+    void Vulkan_Buffer_Manager::init(Vulkan_Instance* vulkan_instance, const uint32_t swap_chain_image_count, const VkDeviceSize instance_arena_size)
     {
         this->vulkan_instance = vulkan_instance;
         this->swap_chain_image_count = swap_chain_image_count;
-        this->growth_factor = growth_factor;
-        this->default_max_instances = default_max_instances;
+        this->default_max_instances = 0;
 
         create_uniform_buffers();
 
         // Create one large, persistently-mapped instance buffer per frame.
         instance_buffers.resize(swap_chain_image_count);
         instance_buffer_offsets.assign(swap_chain_image_count, 0);
+        instance_uploads.assign(swap_chain_image_count, 0);
 
-        VkDeviceSize instance_buffer_size = sizeof(glm::mat4) * static_cast<VkDeviceSize>(default_max_instances);
         for (size_t i = 0; i < swap_chain_image_count; i++)
         {
-            instance_buffers[i] = create_instance_buffer(instance_buffer_size);
+            instance_buffers[i] = create_instance_buffer(instance_arena_size);
         }
     }
 
     void Vulkan_Buffer_Manager::set_growth_factor(const uint32_t growth_factor)
     {
-        this->growth_factor = growth_factor;
+        (void)growth_factor;
     }
 
     void Vulkan_Buffer_Manager::destroy()
@@ -50,6 +49,7 @@ namespace vulvox
         // Reset the allocation cursor for the current frame; next allocations will start from 0
         assert(current_frame < instance_buffer_offsets.size());
         instance_buffer_offsets[current_frame] = 0;
+        instance_uploads[current_frame] = 0;
         instance_buffer_requests = 0; //retain for compatibility
     }
 
@@ -81,8 +81,7 @@ namespace vulvox
         //Check if the buffer size has enough capacity 
         if (VkDeviceSize buffer_size = instance_size * instance_count; buffer_size > instance_buffers[buffer_index].size)
         {
-            //If not, resize it. Create a few extra so we reduce the chance we have to resize again next frame.
-            instance_buffers[buffer_index].recreate(*vulkan_instance, buffer_size + instance_size * growth_factor);
+            throw std::runtime_error("Per-frame instance upload arena exhausted. Increase Renderer_Configuration::instance_upload_arena_bytes.");
         }
 
         return buffer_index;
@@ -130,13 +129,6 @@ namespace vulvox
             return;
         }
 
-        //Allocate additional buffers
-        uint32_t to_allocate = required_buffer_count - static_cast<uint32_t>(instance_buffers.size());
-
-        instance_buffers.reserve(required_buffer_count);
-        for (uint32_t i = 0; i < to_allocate; i++)
-        {
-            instance_buffers.emplace_back(create_instance_buffer(instance_buffer_size));
-        }
+        throw std::runtime_error("Instance buffer expansion during a frame is disabled. Increase Renderer_Configuration::instance_upload_arena_bytes.");
     }
 }

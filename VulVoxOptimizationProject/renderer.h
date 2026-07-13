@@ -1,6 +1,9 @@
 #pragma once
 
 #include <functional>
+#include "frame_statistics.h"
+#include "renderer_configuration.h"
+#include "vertex.h"
 
 namespace vulvox
 {
@@ -12,7 +15,7 @@ namespace vulvox
         Renderer();
         ~Renderer();
 
-        void init(uint32_t width, uint32_t height, float field_of_view, float near_plane, float far_plane);
+        void init(uint32_t width, uint32_t height, float field_of_view, float near_plane, float far_plane, const Renderer_Configuration& configuration = {});
         void destroy();
 
         /// <summary>
@@ -48,12 +51,14 @@ namespace vulvox
         void end_draw();
 
         void draw_model(const std::string& model_name, const std::string& texture_name, const glm::mat4& model_matrix);
+        void draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix);
         void draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices);
         void draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
         void draw_planes(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs);
 
         void load_model(const std::string& model_name, const std::filesystem::path& path);
+        void load_mesh(const std::string& mesh_name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         void load_texture(const std::string& texture_name, const std::filesystem::path& path);
         void load_texture_array(const std::string& texture_name, const std::vector<std::filesystem::path>& paths);
 
@@ -74,6 +79,7 @@ namespace vulvox
         float get_aspect_ratio() const;
 
         std::string get_memory_statistics() const;
+        const Frame_Statistics& get_frame_statistics() const;
 
     private:
 

@@ -9,9 +9,9 @@ namespace vulvox
         ~Vulkan_Engine();
 
         void init_window(uint32_t width, uint32_t height);
-        void init_vulkan();
+        void init_vulkan(const Renderer_Configuration& configuration);
 
-        void init(uint32_t width, uint32_t height);
+        void init(uint32_t width, uint32_t height, const Renderer_Configuration& configuration);
 
         void init_imgui();
         void disable_imgui();
@@ -25,6 +25,7 @@ namespace vulvox
         void resize_window(const uint32_t new_width, const uint32_t new_height);
 
         void load_model(const std::string& model_name, const std::filesystem::path& path);
+        void load_mesh(const std::string& mesh_name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         void load_texture(const std::string& texture_name, const std::filesystem::path& path);
         void load_texture_array(const std::string& texture_name, const std::vector<std::filesystem::path>& paths);
 
@@ -36,6 +37,7 @@ namespace vulvox
         void end_draw();
 
         void draw_model(const std::string& model_name, const std::string& texture_name, const glm::mat4& model_matrix);
+        void draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix);
         void draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices);
         void draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
@@ -46,6 +48,7 @@ namespace vulvox
         bool framebuffer_resized = false;
 
         std::string get_memory_statistics() const;
+        const Frame_Statistics& get_frame_statistics() const;
 
     private:
 
@@ -55,9 +58,13 @@ namespace vulvox
         void recreate_swap_chain();
         void cleanup_swap_chain();
 
-        void create_render_pass();
         void create_graphics_pipeline();
-        void create_framebuffers();
+
+        //Records the barriers + vkCmdBeginRendering/vkCmdEndRendering calls that used to be a
+        //VkRenderPass + VkFramebuffer. Dynamic rendering (core Vulkan 1.3) needs no render pass
+        //object and no framebuffer recreation on resize.
+        void transition_swap_chain_image_to_color_attachment();
+        void transition_swap_chain_image_to_present();
 
         //Depth test setup functions
         void create_depth_resources();
@@ -70,6 +77,13 @@ namespace vulvox
         VkDescriptorSet create_texture_descriptor_set(const Image& texture);
 
         void create_sync_objects();
+        void create_timestamp_queries();
+        void read_gpu_timestamp(const uint32_t frame);
+        void bind_pipeline(VkPipeline pipeline);
+        void bind_descriptor_set(uint32_t set_index, VkDescriptorSet descriptor_set);
+        void bind_vertex_buffer(uint32_t binding, VkBuffer buffer, VkDeviceSize offset);
+        void bind_index_buffer(VkBuffer buffer);
+        void reset_command_state_cache();
 
         void start_record_command_buffer();
         void end_record_command_buffer();
@@ -102,8 +116,7 @@ namespace vulvox
         std::vector<VkSemaphore> image_available_semaphores;
         std::vector<VkSemaphore> render_finished_semaphores;
         std::vector<VkFence> in_flight_fences; //Fence for draw finish
-
-        VkRenderPass render_pass; //Stores how the render images are handeled
+        VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
 
         VkDescriptorSetLayout mvp_descriptor_set_layout;
         VkDescriptorSetLayout texture_descriptor_set_layout;
@@ -114,6 +127,15 @@ namespace vulvox
         VkPipeline instance_tex_array_pipeline;
         VkPipeline vertex_pipeline;
         VkPipeline instance_plane_pipeline;
+
+        struct Command_State_Cache
+        {
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            std::array<VkDescriptorSet, 2> descriptor_sets{ VK_NULL_HANDLE, VK_NULL_HANDLE };
+            std::array<VkBuffer, 4> vertex_buffers{ VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+            std::array<VkDeviceSize, 4> vertex_offsets{};
+            VkBuffer index_buffer = VK_NULL_HANDLE;
+        } command_state_cache;
 
         ///Stuff that gets send to the shaders
 
@@ -152,6 +174,11 @@ namespace vulvox
         //so we create double the amount of buffers so we can overlap frame processing
         static const int MAX_FRAMES_IN_FLIGHT;
         uint32_t current_frame = 0;
+        Frame_Statistics frame_statistics{};
+        std::chrono::steady_clock::time_point cpu_frame_start{};
+        std::chrono::steady_clock::time_point fps_sample_start{};
+        uint32_t fps_sample_frame_count = 0;
+        Renderer_Configuration configuration{};
     };
 
 

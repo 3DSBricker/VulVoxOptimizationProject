@@ -178,15 +178,28 @@ namespace vulvox
         }
     }
 
-    void Image::transition_image_layout(Vulkan_Command_Pool& command_pool, VkImageLayout new_layout)
+    /// <summary>
+    /// Records a single VkImageMemoryBarrier2 through vkCmdPipelineBarrier2 (Vulkan 1.3 synchronization2).
+    /// Compared to the old vkCmdPipelineBarrier path this lets callers express exact
+    /// per-barrier stage/access pairs instead of a single pipeline-wide stage mask, which is
+    /// both more correct and cheaper for the driver to schedule around.
+    /// </summary>
+    void Image::cmd_transition_image_layout(
+        VkCommandBuffer command_buffer,
+        VkImage image,
+        VkImageAspectFlags aspect_flags,
+        uint32_t layer_count,
+        VkImageLayout old_layout, VkImageLayout new_layout,
+        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access)
     {
-        VkCommandBuffer command_buffer = command_pool.begin_single_time_commands();
-
-
-        //Create barrier to prevent reading before write is done
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = current_layout;
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = src_stage;
+        barrier.srcAccessMask = src_access;
+        barrier.dstStageMask = dst_stage;
+        barrier.dstAccessMask = dst_access;
+        barrier.oldLayout = old_layout;
         barrier.newLayout = new_layout;
 
         //Queue family indices for ownership transfer, we dont want to do this here so set IGNORED
@@ -194,46 +207,54 @@ namespace vulvox
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspect_flags;
         barrier.subresourceRange.baseMipLevel = 0; //No mipmapping
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = layer_count;
 
-        VkPipelineStageFlags source_stage;
-        VkPipelineStageFlags destination_stage;
+        VkDependencyInfo dependency_info{};
+        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency_info.imageMemoryBarrierCount = 1;
+        dependency_info.pImageMemoryBarriers = &barrier;
+
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
+    void Image::transition_image_layout(Vulkan_Command_Pool& command_pool, VkImageLayout new_layout)
+    {
+        VkCommandBuffer command_buffer = command_pool.begin_single_time_commands();
+
+        VkPipelineStageFlags2 source_stage;
+        VkAccessFlags2 source_access;
+        VkPipelineStageFlags2 destination_stage;
+        VkAccessFlags2 destination_access;
 
         if (current_layout == VK_IMAGE_LAYOUT_UNDEFINED && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
         {
             //Transfer to write optimal layout
-            barrier.srcAccessMask = 0; //No need to wait
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; //
-
-            source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT; //Start immediately (start of pipeline)
-            destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            source_stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; //Start immediately (start of pipeline)
+            source_access = VK_ACCESS_2_NONE;
+            destination_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+            destination_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         }
         else if (current_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         {
             //Transfer write optimal to optimal shader read layout
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            source_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+            source_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            destination_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            destination_access = VK_ACCESS_2_SHADER_READ_BIT;
         }
         else
         {
             throw std::invalid_argument("Unsupported layout transition!");
         }
 
-        //Send command for image barrier
-        vkCmdPipelineBarrier(command_buffer,
-            source_stage,
-            destination_stage,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &barrier);
+        cmd_transition_image_layout(command_buffer, image, VK_IMAGE_ASPECT_COLOR_BIT, layer_count,
+            current_layout, new_layout,
+            source_stage, source_access,
+            destination_stage, destination_access);
 
         current_layout = new_layout;
 

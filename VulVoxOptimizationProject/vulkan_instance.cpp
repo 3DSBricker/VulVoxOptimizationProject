@@ -15,13 +15,22 @@ namespace vulvox
 
         std::cout << "Driver supported Vulkan version: " << VK_API_VERSION_MAJOR(api_version_support) << "." << VK_API_VERSION_MINOR(api_version_support) << "\n" << std::endl;
 
+        //We rely on Vulkan 1.3 core features (dynamic rendering, synchronization2) everywhere,
+        //so refuse to continue on drivers that can't even instantiate that version.
+        if (api_version_support < VK_API_VERSION_1_3)
+        {
+            throw std::runtime_error("Driver only supports Vulkan " +
+                std::to_string(VK_API_VERSION_MAJOR(api_version_support)) + "." + std::to_string(VK_API_VERSION_MINOR(api_version_support)) +
+                ", but Vulkan 1.3 is required.");
+        }
+
         VkApplicationInfo app_info{};
         app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         app_info.pApplicationName = "Vulkan"; //Application name, doesnt do much (title is in glfw)
         app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         app_info.pEngineName = "VulVox";
         app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        app_info.apiVersion = VK_API_VERSION_1_0;
+        app_info.apiVersion = VK_API_VERSION_1_3;
 
         VkInstanceCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -145,6 +154,13 @@ namespace vulvox
         VkPhysicalDeviceProperties device_properties;
         vkGetPhysicalDeviceProperties(physical_device_candidate, &device_properties);
 
+        //We build the device with a Vulkan 1.3 feature chain (dynamic rendering, synchronization2),
+        //so a device that only reports an older apiVersion is not usable at all.
+        if (device_properties.apiVersion < VK_API_VERSION_1_3)
+        {
+            return 0;
+        }
+
         //Discrete GPUs perform better than integrated, fall back to virtual if none are available
         if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
         {
@@ -176,12 +192,33 @@ namespace vulvox
         VkPhysicalDeviceFeatures supportedFeatures;
         vkGetPhysicalDeviceFeatures(physical_device_candidate, &supportedFeatures);
 
-        if (!indices.is_complete() && !extensions_supported && !swap_chain_adequate && !supportedFeatures.samplerAnisotropy)
+        //Dynamic rendering + synchronization2 are non-negotiable, the whole render loop depends on them.
+        bool required_1_3_features_supported = check_required_1_3_features(physical_device_candidate);
+
+        if (!indices.is_complete() || !extensions_supported || !swap_chain_adequate || !supportedFeatures.samplerAnisotropy || !required_1_3_features_supported)
         {
             return 0;
         }
 
         return device_score;
+    }
+
+    /// <summary>
+    /// Checks that a candidate device actually supports the Vulkan 1.3 core features
+    /// this engine unconditionally relies on: dynamicRendering and synchronization2.
+    /// </summary>
+    bool Vulkan_Instance::check_required_1_3_features(const VkPhysicalDevice& physical_device_candidate) const
+    {
+        VkPhysicalDeviceVulkan13Features vulkan_1_3_features{};
+        vulkan_1_3_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+
+        VkPhysicalDeviceFeatures2 features2{};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2.pNext = &vulkan_1_3_features;
+
+        vkGetPhysicalDeviceFeatures2(physical_device_candidate, &features2);
+
+        return vulkan_1_3_features.dynamicRendering && vulkan_1_3_features.synchronization2;
     }
 
     /// <summary>
@@ -390,12 +427,61 @@ namespace vulvox
             queue_create_infos.push_back(queue_create_info);
         }
 
-        //Set the required device features
+        //First find out what this device actually supports, so we only ever request features
+        //that are really there (asking for unsupported features makes vkCreateDevice fail outright).
+        VkPhysicalDeviceVulkan12Features supported_1_2{};
+        supported_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+        VkPhysicalDeviceVulkan13Features supported_1_3{};
+        supported_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        supported_1_3.pNext = &supported_1_2;
+
+        VkPhysicalDeviceFeatures2 supported_features2{};
+        supported_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        supported_features2.pNext = &supported_1_3;
+
+        vkGetPhysicalDeviceFeatures2(physical_device, &supported_features2);
+
+        //Bindless textures need the full set below; if any is missing we simply don't advertise
+        //bindless support and the engine keeps using per-texture descriptor sets.
+        bindless_textures_supported =
+            supported_1_2.descriptorIndexing &&
+            supported_1_2.shaderSampledImageArrayNonUniformIndexing &&
+            supported_1_2.descriptorBindingPartiallyBound &&
+            supported_1_2.descriptorBindingVariableDescriptorCount &&
+            supported_1_2.descriptorBindingSampledImageUpdateAfterBind &&
+            supported_1_2.runtimeDescriptorArray;
+
+        //--- Vulkan 1.0 features ---
         VkPhysicalDeviceFeatures device_features{};
         device_features.samplerAnisotropy = VK_TRUE; //Device needs to support anisotropic filtering
 
+        //--- Vulkan 1.2 features ---
+        //Enable descriptor indexing opportunistically (only the bits this device actually supports).
+        VkPhysicalDeviceVulkan12Features enabled_1_2{};
+        enabled_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        enabled_1_2.descriptorIndexing = bindless_textures_supported;
+        enabled_1_2.shaderSampledImageArrayNonUniformIndexing = bindless_textures_supported;
+        enabled_1_2.descriptorBindingPartiallyBound = bindless_textures_supported;
+        enabled_1_2.descriptorBindingVariableDescriptorCount = bindless_textures_supported;
+        enabled_1_2.descriptorBindingSampledImageUpdateAfterBind = bindless_textures_supported;
+        enabled_1_2.runtimeDescriptorArray = bindless_textures_supported;
+        enabled_1_2.bufferDeviceAddress = supported_1_2.bufferDeviceAddress; //Handy for future GPU-driven work, cheap to turn on if available
+        enabled_1_2.timelineSemaphore = supported_1_2.timelineSemaphore;
+
+        //--- Vulkan 1.3 features ---
+        //dynamicRendering and synchronization2 are mandatory: create_instance() already refused any
+        //driver below 1.3, and rate_physical_device() rejects devices that don't expose these two.
+        VkPhysicalDeviceVulkan13Features enabled_1_3{};
+        enabled_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        enabled_1_3.pNext = &enabled_1_2;
+        enabled_1_3.dynamicRendering = VK_TRUE;
+        enabled_1_3.synchronization2 = VK_TRUE;
+        enabled_1_3.maintenance4 = supported_1_3.maintenance4; //Relaxed shader/pipeline layout rules, enable if present
+
         VkDeviceCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        create_info.pNext = &enabled_1_3; //Chain: create_info -> 1.3 features -> 1.2 features
 
         //Pass the queue information
         create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
@@ -416,13 +502,12 @@ namespace vulvox
             create_info.enabledLayerCount = 0;
         }
 
-        //Setup device specific extensions
-            //Nothing for now.
-
-        if (vkCreateDevice(physical_device, &create_info, nullptr, &device) != VK_SUCCESS)
+        if (VkResult result = vkCreateDevice(physical_device, &create_info, nullptr, &device); result != VK_SUCCESS)
         {
-            throw std::runtime_error("Failed to create logical device!");
+            throw std::runtime_error("Failed to create logical device! " + std::string(string_VkResult(result)));
         }
+
+        std::cout << "Bindless texture support (descriptor indexing): " << (bindless_textures_supported ? "yes" : "no") << std::endl;
 
         //Store the handles for the graphics and present queues
         vkGetDeviceQueue(device, indices.graphics_family.value(), 0, &graphics_queue);
@@ -523,7 +608,7 @@ namespace vulvox
         allocator_create_info.instance = instance;
         allocator_create_info.physicalDevice = physical_device;
         allocator_create_info.device = device;
-        allocator_create_info.vulkanApiVersion = VK_API_VERSION_1_0;
+        allocator_create_info.vulkanApiVersion = VK_API_VERSION_1_3;
 
         if (vmaCreateAllocator(&allocator_create_info, &allocator) != VK_SUCCESS)
         {
