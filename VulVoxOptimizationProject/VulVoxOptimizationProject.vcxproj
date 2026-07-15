@@ -89,7 +89,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(VULKAN_SDK)/include;$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\tinyobjloader;$(SolutionDir)includes\VulkanMemoryAllocator-3.1.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)/include;$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\tinyobjloader;$(SolutionDir)includes\VulkanMemoryAllocator-3.1.0\include;$(SolutionDir)includes\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -199,7 +199,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(VULKAN_SDK)/include;$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\tinyobjloader;$(SolutionDir)includes\VulkanMemoryAllocator-3.1.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)/include;$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\tinyobjloader;$(SolutionDir)includes\meshoptimizer;$(SolutionDir)includes\VulkanMemoryAllocator-3.1.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -272,6 +272,12 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="allocator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="clusterizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="imgui\imgui.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseCompat|x64'">NotUsing</PrecompiledHeader>
@@ -322,11 +328,35 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseCompat|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="imgui_context.cpp" />
+    <ClCompile Include="indexanalyzer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="indexcodec.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="indexgenerator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="instance_data.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="meshletcodec.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="meshletutils.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="model.cpp" />
     <ClCompile Include="mvp.cpp" />
     <ClCompile Include="mvp_handler.cpp" />
+    <ClCompile Include="opacitymap.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="overdrawoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="partition.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseCompat|x64'">Create</PrecompiledHeader>
@@ -334,8 +364,38 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='DebugCompat|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='DebugWithValidationLayers|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="quantization.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="rasterizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="renderer.cpp" />
+    <ClCompile Include="simplifier.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="spatialorder.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="stripifier.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="tangentspace.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="texture_array_index_binding.cpp" />
+    <ClCompile Include="vcacheoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="vertexcodec.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="vertexfilter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="vfetchoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="vulkan_buffer_manager.cpp" />
     <ClCompile Include="vulkan_command_pool.cpp" />
     <ClCompile Include="vulkan_engine.cpp" />

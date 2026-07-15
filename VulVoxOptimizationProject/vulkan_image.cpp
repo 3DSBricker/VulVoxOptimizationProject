@@ -185,40 +185,34 @@ namespace vulvox
     /// both more correct and cheaper for the driver to schedule around.
     /// </summary>
     void Image::cmd_transition_image_layout(
-        VkCommandBuffer command_buffer,
-        VkImage image,
-        VkImageAspectFlags aspect_flags,
-        uint32_t layer_count,
+        VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect_mask, uint32_t mip_levels,
         VkImageLayout old_layout, VkImageLayout new_layout,
-        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access)
+        VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask,
+        VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask)
     {
         VkImageMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = src_stage;
-        barrier.srcAccessMask = src_access;
-        barrier.dstStageMask = dst_stage;
-        barrier.dstAccessMask = dst_access;
+        barrier.srcStageMask = src_stage_mask;
+        barrier.srcAccessMask = src_access_mask;
+        barrier.dstStageMask = dst_stage_mask;
+        barrier.dstAccessMask = dst_access_mask;
         barrier.oldLayout = old_layout;
         barrier.newLayout = new_layout;
-
-        //Queue family indices for ownership transfer, we dont want to do this here so set IGNORED
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = aspect_flags;
-        barrier.subresourceRange.baseMipLevel = 0; //No mipmapping
-        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.aspectMask = aspect_mask;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = mip_levels;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = layer_count;
+        barrier.subresourceRange.layerCount = 1;
 
-        VkDependencyInfo dependency_info{};
-        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dependency_info.imageMemoryBarrierCount = 1;
-        dependency_info.pImageMemoryBarriers = &barrier;
+        VkDependencyInfo dep_info{};
+        dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep_info.imageMemoryBarrierCount = 1;
+        dep_info.pImageMemoryBarriers = &barrier;
 
-        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+        vkCmdPipelineBarrier2(cmd, &dep_info);
     }
 
     void Image::transition_image_layout(Vulkan_Command_Pool& command_pool, VkImageLayout new_layout)

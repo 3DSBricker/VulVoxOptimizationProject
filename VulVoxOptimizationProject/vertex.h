@@ -1,4 +1,9 @@
 #pragma once
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+#include <vulkan/vulkan.h>
+#include <cstdint>
+#include <vector>
 
 namespace vulvox
 {

@@ -3,10 +3,6 @@
 #include <iostream>
 #include <chrono>
 
-//GLFW & Vulkan
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 //GLM
 //Force depth range from 0.0 to 1.0 (Vulkan standard), instead of -1.0 to 1.0
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -16,8 +12,13 @@
 #include <glm/gtx/string_cast.hpp>
 
 #include <filesystem>
-#include "../VulVoxOptimizationProject/renderer.h"
 
+//GLFW & Vulkan
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+// project
+#include "../VulVoxOptimizationProject/renderer.h"
 #include "camera.h"
 
 

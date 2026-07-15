@@ -95,7 +95,24 @@ namespace vulvox
     {
         vulkan_engine->draw_model_with_texture_array(model_name, texture_array_name, texture_index, model_matrix);
     }
+    
+    uint32_t Renderer::register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
+    {
+        // Stuur door naar de echte Vulkan engine backend
+        return vulkan_engine->register_static_instances(model_matrices, texture_indices);
+    }
 
+    void Renderer::draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, uint32_t handle)
+    {
+        // Stuur de draw call door naar de echte Vulkan engine backend
+        vulkan_engine->draw_static_instanced(model_name, texture_array_name, handle);
+    }
+
+    void Renderer::draw_batch(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& transforms)
+    {
+        vulkan_engine->draw_batch(model_name, texture_name, transforms);;
+    }
+    
     void Renderer::draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices)
     {
         vulkan_engine->draw_instanced(model_name, texture_name, model_matrices);

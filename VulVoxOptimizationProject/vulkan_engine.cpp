@@ -346,56 +346,62 @@ namespace vulvox
             imgui_context->render_and_end_imgui_frame(current_command_buffer);
         }
 
-        //Complete the command buffer before submitting it and presenting the image
+        // Voltooi de command buffer voordat deze wordt ingediend
         end_record_command_buffer();
 
-        VkSubmitInfo submit_info{};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        // Vulkan 1.3 Core: Synchronization2 
+        // We gebruiken VkSemaphoreSubmitInfo in plaats van de oude geneste arrays in VkSubmitInfo
+        VkSemaphoreSubmitInfo wait_semaphore_info{};
+        wait_semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        wait_semaphore_info.semaphore = image_available_semaphores[current_frame];
+        wait_semaphore_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        wait_semaphore_info.deviceIndex = 0;
 
-        //Which semaphore to wait for before execution and at which stage
-        std::array<VkSemaphore, 1> wait_semaphores = { image_available_semaphores[current_frame] };
-        std::array<VkPipelineStageFlags, 1> wait_stages = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-        submit_info.waitSemaphoreCount = static_cast<uint32_t>(wait_semaphores.size());
-        submit_info.pWaitSemaphores = wait_semaphores.data();
-        submit_info.pWaitDstStageMask = wait_stages.data();
+        VkSemaphoreSubmitInfo signal_semaphore_info{};
+        signal_semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        signal_semaphore_info.semaphore = render_finished_semaphores[current_frame];
+        signal_semaphore_info.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+        signal_semaphore_info.deviceIndex = 0;
 
-        //Which semaphore to signal when the command buffer is done
-        std::array<VkSemaphore, 1> signal_semaphores = { render_finished_semaphores[current_frame] };
-        submit_info.signalSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size());
-        submit_info.pSignalSemaphores = signal_semaphores.data();
+        VkCommandBufferSubmitInfo cmd_buffer_info{};
+        cmd_buffer_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cmd_buffer_info.commandBuffer = current_command_buffer;
+        cmd_buffer_info.deviceMask = 0;
 
-        //Link command buffer
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &current_command_buffer;
+        VkSubmitInfo2 submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submit_info.waitSemaphoreInfoCount = 1;
+        submit_info.pWaitSemaphoreInfos = &wait_semaphore_info;
+        submit_info.signalSemaphoreInfoCount = 1;
+        submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
+        submit_info.commandBufferInfoCount = 1;
+        submit_info.pCommandBufferInfos = &cmd_buffer_info;
 
-        //Submit the command buffer so the GPU starts executing it
-        if (vkQueueSubmit(vulkan_instance.graphics_queue, 1, &submit_info, in_flight_fences[current_frame]) != VK_SUCCESS)
+        // Gebruik vkQueueSubmit2 (Vulkan 1.3 Core) om de command buffer in te dienen
+        if (vkQueueSubmit2(vulkan_instance.graphics_queue, 1, &submit_info, in_flight_fences[current_frame]) != VK_SUCCESS)
         {
-            throw std::runtime_error("Failed to submit draw command buffer!");
+            throw std::runtime_error("Failed to submit draw command buffer via vkQueueSubmit2!");
         }
         frame_statistics.queue_submits++;
 
+        // Present code blijft nagenoeg gelijk omdat dit onderdeel is van de KHR_swapchain extensie
         VkPresentInfoKHR present_info{};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = signal_semaphores.data(); //Wait for semaphore before we can present
+        present_info.pWaitSemaphores = &signal_semaphore_info.semaphore; // Koppel aan het zojuist gesignaleerde semaphore
 
         std::array<VkSwapchainKHR, 1> swap_chains = { swap_chain.swap_chain };
         present_info.swapchainCount = static_cast<uint32_t>(swap_chains.size());
         present_info.pSwapchains = swap_chains.data();
         present_info.pImageIndices = &current_image_index;
-
-        //Dont need to collect the draw results because the present function returns them as well
         present_info.pResults = nullptr;
 
-        //Present the result on screen
+        // Presenteer het resultaat
         VkResult result = vkQueuePresentKHR(vulkan_instance.present_queue, &present_info);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebuffer_resized)
         {
             framebuffer_resized = false;
-
-            //Swap chain in not compatible with the current window size, recreate
             recreate_swap_chain();
         }
         else if (result != VK_SUCCESS)
@@ -403,7 +409,7 @@ namespace vulvox
             throw std::runtime_error("Failed to present swap chain image!");
         }
 
-        //Rotate to next frame resources
+        // Doorvoeren van frame statistics
         frame_statistics.host_buffer_uploads = 1 + buffer_manager.get_frame_uploads(current_frame);
         frame_statistics.cpu_frame_time_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_frame_start).count();
         ++fps_sample_frame_count;
@@ -415,6 +421,7 @@ namespace vulvox
             fps_sample_start = std::chrono::steady_clock::now();
             fps_sample_frame_count = 0;
         }
+        
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
@@ -462,14 +469,8 @@ namespace vulvox
         draw_model(mesh_name, texture_name, model_matrix);
     }
 
-    void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix)
+void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix)
     {
-        if (true)
-        {
-            std::cout << "draw_model_with_texture_array is not yet supported." << std::endl;
-            return;
-        }
-
         if (!models.contains(model_name))
         {
             std::cout << "No model with name " << model_name << " is loaded, skipping draw call." << std::endl;
@@ -482,37 +483,69 @@ namespace vulvox
             return;
         }
 
-        std::array<VkDeviceSize, 1> offsets = { 0 };
+        // We behandelen het tekenen van een enkel model met een texture array index als 
+        // een instanced draw met 1 instantie, zodat we de 'instance_tex_array_pipeline' kunnen hergebruiken.
+        std::vector<glm::mat4> model_matrices = { model_matrix };
+        std::vector<uint32_t> texture_indices = { static_cast<uint32_t>(texture_index) };
 
-        //Bind the uniform buffers
-        //Bind set 0, the MVP buffer
-        bind_descriptor_set(0, descriptor_sets.tri_descriptor_set[current_frame]);
-        //Bind set 1, the texture
+        auto model_matrices_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, model_matrices);
+        auto texture_index_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, texture_indices);
+
+        // Bind set 0 (MVP) en set 1 (Texture Array)
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
         bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
 
-        //Binding point 0 - mesh vertex buffer
+        // Binding point 0 - Mesh vertex buffer
         bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
 
-        ////Binding point 1 - instance data buffer
-        //vkCmdBindVertexBuffers(current_command_buffer, 1, 1, &instance_data_buffers[current_frame].buffer, offsets.data());
+        // Binding point 1 - Instance data buffer (transformatie matrix)
+        VkDeviceSize instance_offset = model_matrices_ref.offset;
+        VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
+        bind_vertex_buffer(1, instance_buf, instance_offset);
 
-        ////Binding point 2 - texture array index buffer
-        //vkCmdBindVertexBuffers(current_command_buffer, 2, 1, &instance_texture_index_buffers[current_frame].buffer, offsets.data());
+        // Binding point 2 - Texture array index buffer
+        VkDeviceSize tex_idx_offset = texture_index_ref.offset;
+        VkBuffer tex_idx_buf = buffer_manager.get_instance_buffer(texture_index_ref.buffer_index).buffer;
+        bind_vertex_buffer(2, tex_idx_buf, tex_idx_offset);
 
-        //Set the push constants (model matrix)
-        vkCmdPushConstants(current_command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model_matrix);
-
-        //Bind index buffer
+        // Bind index buffer
         bind_index_buffer(models.at(model_name).index_buffer.buffer);
 
-        bind_pipeline(vertex_pipeline);
+        // Activeer de juiste pipeline die de texture array index via vertex attributes verwacht
+        bind_pipeline(instance_tex_array_pipeline);
 
-        //Draw command, set vertex and instance counts (we're not using instancing here) and indices
+        // Draw commando met 1 instantie
         vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, 1, 0, 0, 0);
+        
         frame_statistics.draw_calls++;
         frame_statistics.indices += models.at(model_name).index_count;
     }
 
+    void Vulkan_Engine::draw_batch(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& transforms)
+    {
+        // A. BIND STATE (Dit gebeurt nu maar 1x per batch in plaats van 9000x!)
+        bind_pipeline(instance_pipeline);
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
+        bind_descriptor_set(1, texture_descriptor_sets.at(texture_name));
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
+
+        // B. UPDATE BUFFER (Eén grote memcpy voor alle 9000 objecten)
+        auto model_matrices_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, transforms);
+    
+        // C. BIND INSTANCE BUFFER
+        VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
+        bind_vertex_buffer(1, instance_buf, model_matrices_ref.offset);
+
+        // D. DRAW CALL
+        uint32_t instance_count = static_cast<uint32_t>(transforms.size());
+        vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, instance_count, 0, 0, 0);
+
+        // Statistieken
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * instance_count;
+    }
+    
     void Vulkan_Engine::draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices)
     {
         if (!models.contains(model_name))
@@ -557,7 +590,81 @@ namespace vulvox
         frame_statistics.draw_calls++;
         frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * instance_count;
     }
+    
+    template<typename T>
+    void Vulkan_Engine::create_static_gpu_buffer(const std::vector<T>& data, VkBuffer& out_buffer, VmaAllocation& out_allocation)
+        {
+            VkDeviceSize buffer_size = sizeof(T) * data.size();
 
+            // Configureer de buffer voor permanente opslag op de GPU (VRAM)
+            VkBufferCreateInfo buffer_info = {};
+            buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            buffer_info.size = buffer_size;
+            buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            VmaAllocationCreateInfo alloc_info = {};
+            // CPU_TO_GPU zorgt dat we er makkelijk bij kunnen om te schrijven (of gebruik staging als je dat al hebt)
+            alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; 
+
+            // Gebruik je vmaAllocator (vervang 'allocator' door hoe die in jouw engine heet!)
+            vmaCreateBuffer(vulkan_instance.allocator, &buffer_info, &alloc_info, &out_buffer, &out_allocation, nullptr);
+
+            // Kopieer de data er eenmalig in
+            void* mapped_data;
+            vmaMapMemory(vulkan_instance.allocator, out_allocation, &mapped_data);
+            std::memcpy(mapped_data, data.data(), buffer_size);
+            vmaUnmapMemory(vulkan_instance.allocator, out_allocation);
+        }
+    
+    StaticInstanceHandle Vulkan_Engine::register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
+    {
+        StaticInstanceGroup group;
+        group.instance_count = static_cast<uint32_t>(model_matrices.size());
+
+        // Maak de twee permanente buffers aan
+        create_static_gpu_buffer(model_matrices, group.matrix_buffer, group.matrix_allocation);
+        create_static_gpu_buffer(texture_indices, group.index_buffer, group.index_allocation);
+
+        // Genereer een uniek ID en sla de groep op
+        vulvox::StaticInstanceHandle handle = next_static_handle++;
+        static_instance_groups[handle] = group;
+
+        return handle;
+    }
+
+    void Vulkan_Engine::draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, vulvox::StaticInstanceHandle handle)
+    {
+        // Bestaat deze groep wel?
+        if (!static_instance_groups.contains(handle)) return;
+        if (!models.contains(model_name) || !texture_arrays.contains(texture_array_name)) return;
+
+        const auto& group = static_instance_groups.at(handle);
+
+        // Bind de camera uniform buffers (MVP) en textures
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
+        bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
+
+        // Binding point 0 - mesh vertex buffer
+        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
+
+        // Binding point 1 - DIRECT binden van onze permanente matrix buffer (geen offsets nodig!)
+        bind_vertex_buffer(1, group.matrix_buffer, 0);
+
+        // Binding point 2 - DIRECT binden van onze permanente texture index buffer
+        bind_vertex_buffer(2, group.index_buffer, 0);
+
+        // Bind index buffer en pipeline
+        bind_index_buffer(models.at(model_name).index_buffer.buffer);
+        bind_pipeline(instance_tex_array_pipeline);
+
+        // Renderen maar!
+        vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, group.instance_count, 0, 0, 0);
+        
+        frame_statistics.draw_calls++;
+        frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * group.instance_count;
+    }
+    
     void Vulkan_Engine::draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
     {
         if (!models.contains(model_name))
@@ -1413,11 +1520,10 @@ namespace vulvox
 
     void Vulkan_Engine::start_record_command_buffer()
     {
-        //Start recording a command buffer
+        reset_command_state_cache();
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = 0;
-        begin_info.pInheritanceInfo = nullptr;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // Goede practice in Vulkan 1.3
 
         if (vkBeginCommandBuffer(current_command_buffer, &begin_info) != VK_SUCCESS)
         {
@@ -1428,27 +1534,27 @@ namespace vulvox
         vkCmdResetQueryPool(current_command_buffer, timestamp_query_pool, query_index, 2);
         vkCmdWriteTimestamp2(current_command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, timestamp_query_pool, query_index);
 
-        //Dynamic rendering (Vulkan 1.3 core) replaces vkCmdBeginRenderPass/VkFramebuffer: we
-        //explicitly transition the swap chain image ourselves instead of the render pass doing it
-        //implicitly through its initial/final layout. The depth image was already transitioned
-        //once in create_depth_resources() and never needs to move again.
+        // Beheer van de swap chain layout
         transition_swap_chain_image_to_color_attachment();
 
+        // Vulkan 1.3 Dynamic Rendering Attachments
         VkRenderingAttachmentInfo color_attachment_info{};
         color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachment_info.imageView = swap_chain.image_views[current_image_index];
         color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
         color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_attachment_info.clearValue.color = { { 0.0f, 0.0f, 0.0f, 1.0f } }; //Clear image to black
+        color_attachment_info.clearValue.color = {{ 0.0f, 0.0f, 0.0f, 1.0f }};
 
         VkRenderingAttachmentInfo depth_attachment_info{};
         depth_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         depth_attachment_info.imageView = depth_image.image_view;
         depth_attachment_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
         depth_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; //We dont care what the gpu does with the data after determining the depth
-        depth_attachment_info.clearValue.depthStencil = { 1.0f, 0 }; //Clear depth image to 1.0 (far plane)
+        depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth_attachment_info.clearValue.depthStencil = { 1.0f, 0 };
 
         VkRenderingInfo rendering_info{};
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1459,9 +1565,10 @@ namespace vulvox
         rendering_info.pColorAttachments = &color_attachment_info;
         rendering_info.pDepthAttachment = &depth_attachment_info;
 
+        // Start rendering zonder VkRenderPass
         vkCmdBeginRendering(current_command_buffer, &rendering_info);
 
-        //We set viewport and scissor to dynamic earlier, so we define them now
+        // Dynamic state configuratie
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;

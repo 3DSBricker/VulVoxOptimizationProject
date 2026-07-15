@@ -54,6 +54,8 @@
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_vulkan.h"
 
+#include "renderer.h"
+
 #include "utils.h"
 #include "vertex.h"
 #include "mvp.h"

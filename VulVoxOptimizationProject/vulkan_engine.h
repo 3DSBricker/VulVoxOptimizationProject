@@ -1,7 +1,17 @@
 #pragma once
+#include "renderer.h"
 
 namespace vulvox
 {
+    // Zet dit bovenaan je Vulkan_Engine.h (buiten de class, of als private struct)
+    struct StaticInstanceGroup {
+        VkBuffer matrix_buffer = VK_NULL_HANDLE;
+        VmaAllocation matrix_allocation = VK_NULL_HANDLE; // We gaan uit van VMA op basis van je code
+        VkBuffer index_buffer = VK_NULL_HANDLE;
+        VmaAllocation index_allocation = VK_NULL_HANDLE;
+        uint32_t instance_count = 0;
+    };
+    
     class Vulkan_Engine
     {
     public:
@@ -17,6 +27,9 @@ namespace vulvox
         void disable_imgui();
         ImGui_Context* get_imgui_context() const;
 
+        uint32_t register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
+        void draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, uint32_t handle);
+        
         void destroy();
 
         GLFWwindow* get_glfw_window_ptr();
@@ -39,6 +52,7 @@ namespace vulvox
         void draw_model(const std::string& model_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix);
+        void draw_batch(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& transforms);
         void draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices);
         void draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
         void draw_planes(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs);
@@ -60,6 +74,14 @@ namespace vulvox
 
         void create_graphics_pipeline();
 
+        // Administratie voor de statische groepen
+        StaticInstanceHandle next_static_handle = 1;
+        std::unordered_map<StaticInstanceHandle, StaticInstanceGroup> static_instance_groups;
+
+        // Handige helper om een permanente buffer aan te maken (zie stap hieronder)
+        template<typename T>
+        void create_static_gpu_buffer(const std::vector<T>& data, VkBuffer& out_buffer, VmaAllocation& out_allocation);
+        
         //Records the barriers + vkCmdBeginRendering/vkCmdEndRendering calls that used to be a
         //VkRenderPass + VkFramebuffer. Dynamic rendering (core Vulkan 1.3) needs no render pass
         //object and no framebuffer recreation on resize.
