@@ -758,6 +758,50 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         frame_statistics.draw_calls++;
         frame_statistics.vertices += 6ull * instance_count;
     }
+    
+        void Vulkan_Engine::draw_terrain(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs)
+    {
+        if (!texture_arrays.contains(texture_array_name))
+        {
+            std::cout << "No texture array with name " << texture_array_name << " is loaded, skipping draw call." << std::endl;
+            return;
+        }
+
+        auto model_matrices_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, model_matrices);
+        auto texture_index_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, texture_indices);
+        auto min_max_uv_ref = buffer_manager.copy_to_instance_buffer(vulkan_instance, current_frame, min_max_uvs);
+
+        std::array<VkDeviceSize, 1> offsets = { 0 };
+
+        //Bind the uniform buffers
+        //Bind set 0, the MVP buffer
+        bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
+        //Bind set 1, the textures
+        bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
+
+        //Binding point 1 - instance data buffer
+        VkDeviceSize instance_offset = model_matrices_ref.offset;
+        VkBuffer instance_buf = buffer_manager.get_instance_buffer(model_matrices_ref.buffer_index).buffer;
+        bind_vertex_buffer(1, instance_buf, instance_offset);
+
+        //Binding point 2 - texture array index buffer
+        VkDeviceSize tex_idx_offset = texture_index_ref.offset;
+        VkBuffer tex_idx_buf = buffer_manager.get_instance_buffer(texture_index_ref.buffer_index).buffer;
+        bind_vertex_buffer(2, tex_idx_buf, tex_idx_offset);
+
+        //Binding point 3 - texture min max uvs
+        VkDeviceSize uv_offset = min_max_uv_ref.offset;
+        VkBuffer uv_buf = buffer_manager.get_instance_buffer(min_max_uv_ref.buffer_index).buffer;
+        bind_vertex_buffer(3, uv_buf, uv_offset);
+
+        bind_pipeline(instance_terrain_pipeline);
+
+        //Render instances
+        uint32_t instance_count = static_cast<uint32_t>(model_matrices.size());
+        vkCmdDraw(current_command_buffer, 6, instance_count, 0, 0);
+        frame_statistics.draw_calls++;
+        frame_statistics.vertices += 6ull * instance_count;
+    }
 
     bool Vulkan_Engine::initialized() const
     {
@@ -901,6 +945,7 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         std::filesystem::path instance_tex_array_frag_shader_filepath("../shaders/instance_tex_array_frag.spv");
 
         std::filesystem::path instance_plane_vert_shader_filepath("../shaders/instance_plane_vert.spv");
+        std::filesystem::path instance_terrain_vert_shader_filepath("../shaders/instance_terrain_vert.spv");
 
         Vulkan_Shader vert_shader{ vulkan_instance.device, vert_shader_filepath, "main", VK_SHADER_STAGE_VERTEX_BIT };
         Vulkan_Shader frag_shader{ vulkan_instance.device, frag_shader_filepath, "main", VK_SHADER_STAGE_FRAGMENT_BIT };
@@ -909,6 +954,7 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         Vulkan_Shader instance_vert_tex_array_shader{ vulkan_instance.device, instance_tex_array_vert_shader_filepath, "main", VK_SHADER_STAGE_VERTEX_BIT };
         Vulkan_Shader instance_frag_tex_array_shader{ vulkan_instance.device, instance_tex_array_frag_shader_filepath, "main", VK_SHADER_STAGE_FRAGMENT_BIT };
         Vulkan_Shader instance_plane_vert_shader{ vulkan_instance.device, instance_plane_vert_shader_filepath, "main", VK_SHADER_STAGE_VERTEX_BIT };
+        Vulkan_Shader instance_terrain_vert_shader{ vulkan_instance.device, instance_terrain_vert_shader_filepath, "main", VK_SHADER_STAGE_VERTEX_BIT };
 
         //Describes the configuration of the vertices the triangles and lines use
         VkPipelineInputAssemblyStateCreateInfo input_assembly_info{};
@@ -1179,6 +1225,7 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         }
 
         VkPipelineShaderStageCreateInfo plane_vert_shader_stage_info = instance_plane_vert_shader.get_shader_stage_create_info();
+        VkPipelineShaderStageCreateInfo plane_terrain_shader_stage_info = instance_terrain_vert_shader.get_shader_stage_create_info();
         //Re-use the frag shader for instance with texture arrays
         VkPipelineShaderStageCreateInfo plane_frag_shader_stage_info = instance_frag_tex_array_shader.get_shader_stage_create_info();
 
@@ -1195,6 +1242,17 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         if (vkCreateGraphicsPipelines(vulkan_instance.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &instance_plane_pipeline) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create plane graphics pipeline!");
+        }
+        
+        // --- TOE TE VOEGEN CODE VOOR TERRAIN PIPELINE ---
+
+        // Wissel de vertex shader om naar de terrain shader (de fragment shader en vertex bindings hergebruiken we van plane)
+        shader_stages_info[0] = plane_terrain_shader_stage_info; 
+
+        // Maak de pipeline aan en sla hem op in instance_terrain_pipeline
+        if (vkCreateGraphicsPipelines(vulkan_instance.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &instance_terrain_pipeline) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create terrain graphics pipeline!");
         }
     }
 
