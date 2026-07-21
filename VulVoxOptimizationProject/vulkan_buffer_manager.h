@@ -64,6 +64,8 @@ namespace vulvox
         template<typename T>
         InstanceBufferRef copy_to_instance_buffer(Vulkan_Instance& instance, const uint32_t current_frame, const std::vector<T>& data)
         {
+            if(data.empty())
+                return {};
             // Ensure current_frame is valid
             assert(current_frame < instance_buffers.size());
 

@@ -36,7 +36,7 @@ void main() {
     vec2 texcoord = texcoords[gl_VertexIndex];
 
     //compute position
-    gl_Position = mvp.projection * mvp.view * mvp.model * instance_model_matrix * vec4(vertex, 0.0, 1.0);
+    gl_Position = mvp.projection * mvp.view * mvp.model * instance_model_matrix * vec4(vertex.x, 0.0, vertex.y, 1.0);
 
     //compute texture coordinates
     //vec2 uv_min = vec2(0,0);
